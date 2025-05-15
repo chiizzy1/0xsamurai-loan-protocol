@@ -92,6 +92,3 @@ contract HelperConfig is Script {
         });
     }
 }
-
-// forge test --match-test testRequestTokens -vv
-// forge test --fork-url $SEPOLIA_RPC_URL -vv

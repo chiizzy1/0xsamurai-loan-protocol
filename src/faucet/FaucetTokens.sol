@@ -83,6 +83,9 @@ contract FaucetTokens is Ownable {
      * @dev Allow the owner to update token contract addresses if needed
      */
     function setTokenAddresses(address _weth, address _wbtc, address _dai) external onlyOwner {
+        if (_weth == address(0) || _wbtc == address(0) || _dai == address(0)) {
+            revert FaucetTokens__AddressZeroIsNotAllowed();
+        }
         weth = WETH(_weth);
         wbtc = WBTC(_wbtc);
         dai = DAI(_dai);

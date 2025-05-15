@@ -11,6 +11,7 @@ import {DeployLending} from "../../script/DeployLending.s.sol";
 import {HelperConfig} from "../../script/HelperConfig.s.sol";
 import {Lending} from "../../src/Lending.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 contract FaucetTest is Test {
     HelperConfig public helperConfig;
@@ -110,27 +111,34 @@ contract FaucetTest is Test {
         assertEq(IERC20(weth).balanceOf(sakadinho), 2 ether, "Sakadinho should have 2 WETH");
     }
 
-    function test_RequestTokens_EmitsCorrectEvent() public {
+    function testRequestTokensEmitsCorrectEvent() public {
         FaucetTokens faucetContract = FaucetTokens(faucet);
-        
+
         vm.startPrank(obofte);
+        // Expect an event with specific parameters
         vm.expectEmit(true, true, true, true);
+        // Define the expected event
         emit FaucetTokens.TokensDistributed(
             obofte,
-            2 ether,    // wethAmount
-            1 ether,    // wbtcAmount
+            2 ether, // wethAmount
+            1 ether, // wbtcAmount
             10_000 ether // daiAmount
         );
         faucetContract.requestTokens();
         vm.stopPrank();
     }
 
-    function test_SetDistributionAmounts_OnlyOwner() public {
+    function testOnlyOwnerCanSetDistributionAmounts() public {
         FaucetTokens faucetContract = FaucetTokens(faucet);
-        
+
         // Non-owner should fail
         vm.startPrank(obofte);
-        vm.expectRevert("Ownable: caller is not the owner");
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Ownable.OwnableUnauthorizedAccount.selector,
+                obofte // unauthorized account
+            )
+        );
         faucetContract.setDistributionAmounts(1 ether, 0.5 ether, 5_000 ether);
         vm.stopPrank();
 
@@ -138,6 +146,9 @@ contract FaucetTest is Test {
         uint256 newWethAmount = 1 ether;
         uint256 newWbtcAmount = 0.5 ether;
         uint256 newDaiAmount = 5_000 ether;
+
+        console.log("contract owner: ", faucetContract.owner());
+        console.log("obofte: ", obofte);
 
         vm.prank(faucetContract.owner());
         faucetContract.setDistributionAmounts(newWethAmount, newWbtcAmount, newDaiAmount);
@@ -147,22 +158,26 @@ contract FaucetTest is Test {
         assertEq(faucetContract.daiAmount(), newDaiAmount);
     }
 
-    function test_SetCooldown_OnlyOwner() public {
+    function testOnlyOwnerCanSetCooldown() public {
         FaucetTokens faucetContract = FaucetTokens(faucet);
         uint256 newCooldown = 12 hours;
 
         // Non-owner should fail
         vm.prank(obofte);
-        vm.expectRevert("Ownable: caller is not the owner");
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Ownable.OwnableUnauthorizedAccount.selector,
+                obofte // unauthorized account
+            )
+        );
         faucetContract.setCooldown(newCooldown);
-
         // Owner should succeed
         vm.prank(faucetContract.owner());
         faucetContract.setCooldown(newCooldown);
         assertEq(faucetContract.requestCooldown(), newCooldown);
     }
 
-    function test_SetTokenAddresses_RevertOnZeroAddress() public {
+    function testSetTokenAddressesRevertOnZeroAddress() public {
         FaucetTokens faucetContract = FaucetTokens(faucet);
         vm.startPrank(faucetContract.owner());
 
@@ -174,24 +189,20 @@ contract FaucetTest is Test {
 
         vm.expectRevert(FaucetTokens.FaucetTokens__AddressZeroIsNotAllowed.selector);
         faucetContract.setTokenAddresses(address(weth), address(wbtc), address(0));
-        
+
         vm.stopPrank();
     }
 
-    function test_RequestTokens_UpdatesLastRequestTime() public {
+    function testRequestTokensUpdatesLastRequestTime() public {
         FaucetTokens faucetContract = FaucetTokens(faucet);
-        
+
         vm.prank(obofte);
         faucetContract.requestTokens();
-        
-        assertEq(
-            faucetContract.lastRequestTime(obofte),
-            block.timestamp,
-            "Last request time should be updated"
-        );
+
+        assertEq(faucetContract.lastRequestTime(obofte), block.timestamp, "Last request time should be updated");
     }
 
-    function test_Constructor_RevertOnZeroAddress() public {
+    function testConstructorRevertOnZeroAddress() public {
         vm.expectRevert(FaucetTokens.FaucetTokens__AddressZeroIsNotAllowed.selector);
         new FaucetTokens(address(0), address(wbtc), address(dai));
 
@@ -204,5 +215,6 @@ contract FaucetTest is Test {
 }
 
 // forge test --mp test/unit/FaucetTest.t.sol
+// forge test --mp test/unit/LendingTest.t.sol
 // forge test --match-test testFaucet -vvvv
 // forge test --match-test testFaucet --rpc-url $SEPOLIA_RPC_URL -vvvv
