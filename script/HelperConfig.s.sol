@@ -3,7 +3,6 @@
 pragma solidity ^0.8.20;
 
 import {Script} from "forge-std/Script.sol";
-import {ERC20Mock} from "../test/mocks/ERC20Mock.t.sol";
 import {MockV3Aggregator} from "../test/mocks/MockV3Aggregator.t.sol";
 import {FaucetTokens} from "../src/faucet/FaucetTokens.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";

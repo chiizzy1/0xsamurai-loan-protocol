@@ -5,7 +5,7 @@ pragma solidity ^0.8.20;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
+import {OracleLib, AggregatorV3Interface} from "./libraries/OracleLib.sol";
 
 /**
  * @title Lending
@@ -41,6 +41,11 @@ contract Lending is ReentrancyGuard, Ownable {
     error Lending__InsufficientCollateralForLoan(uint256 freeCollateral);
     error Lending__SameTokenNotAllowed();
 
+    ///////////////////
+    // Types
+    ///////////////////
+    using OracleLib for AggregatorV3Interface;
+
     /*//////////////////////////////////////////////////////////////
                                 STATE VARIABLES
     //////////////////////////////////////////////////////////////*/
@@ -52,7 +57,7 @@ contract Lending is ReentrancyGuard, Ownable {
     uint256 public constant INTEREST_PRECISION = 100;
     uint256 public constant LIQUIDATION_REWARD = 10;
     uint256 private constant LIQUIDATION_PRECISION = 100;
-    uint256 private constant SECONDS_PER_YEAR = 31536000; // 365 days in seconds
+    uint256 private constant SECONDS_PER_YEAR = 31536000;
 
     address[] private s_allowedTokens;
     mapping(address token => address priceFeed) private s_tokenToPriceFeed;
@@ -75,7 +80,7 @@ contract Lending is ReentrancyGuard, Ownable {
     struct LiquidationDetails {
         uint256 totalDebt; // Total debt including interest
         uint256 totalCollateral; // Total collateral locked in loan
-        uint256 totalReward; // total loan value + 10% bonus
+        uint256 totalReward; // total debt value + 10% (collateral value)
     }
 
     enum LoanStatus {
@@ -464,24 +469,21 @@ contract Lending is ReentrancyGuard, Ownable {
     /**
      * @dev Calculates the total amounts involved in liquidation
      */
-    function _calculateTotalLiquidation(
-        Loan storage loan,
-        address borrowToken,
-        address collateralToken
-    ) private view returns (LiquidationDetails memory details) {
+    function _calculateTotalLiquidation(Loan storage loan, address borrowToken, address collateralToken)
+        private
+        view
+        returns (LiquidationDetails memory details)
+    {
         // Calculate total debt including interest
         uint256 interest = _loanInterest(loan);
         details.totalDebt = loan.amount + interest;
         details.totalCollateral = loan.collateralAmount;
 
         // Convert debt amount to collateral token equivalent
-        uint256 debtInCollateral = _getTokenAmountFromUsd(
-            collateralToken,
-            _getUSDValue(borrowToken, details.totalDebt)
-        );
+        uint256 debtInCollateral = _getTokenAmountFromUsd(collateralToken, _getUSDValue(borrowToken, details.totalDebt));
 
-        // Calculate bonus (10% of the debt in collateral terms)
-        uint256 bonusAmount = (debtInCollateral * LIQUIDATION_REWARD) / LIQUIDATION_PRECISION;
+        // Calculate bonus (10% of the locked collateral)
+        uint256 bonusAmount = (details.totalCollateral * LIQUIDATION_REWARD) / LIQUIDATION_PRECISION;
 
         // Liquidator gets collateral worth their debt repayment plus bonus
         details.totalReward = debtInCollateral + bonusAmount;
@@ -516,9 +518,7 @@ contract Lending is ReentrancyGuard, Ownable {
         loan.collateralAmount = 0;
         loan.interest = 0;
 
-        emit LoanLiquidated(
-            account, borrowToken, collateralToken, details.totalDebt, details.totalReward, msg.sender
-        );
+        emit LoanLiquidated(account, borrowToken, collateralToken, details.totalDebt, details.totalReward, msg.sender);
 
         // Transfer the borrowed tokens from liquidator to protocol
         bool repaySuccess = IERC20(borrowToken).transferFrom(msg.sender, address(this), details.totalDebt);
@@ -601,15 +601,16 @@ contract Lending is ReentrancyGuard, Ownable {
      */
     function _getUSDValue(address tokenAddress, uint256 amount) private view returns (uint256) {
         AggregatorV3Interface priceFeed = AggregatorV3Interface(s_tokenToPriceFeed[tokenAddress]);
-        (, int256 price,,,) = priceFeed.latestRoundData();
+        (, int256 price,,,) = priceFeed.staleCheckLatestRoundData();
         // 1 ETH = 1000 USD
         // The returned value from Chainlink will be 1000 * 1e8
-        // Most USD pairs have 8 decimals, so we will just pretend they all do
+        // Most USD pairs have 8 decimals. for this protocol we will just pretend they all do
         // We want to have everything in terms of WEI, so we add 10 zeros at the end
         return (uint256(price) * amount * ADDITIONAL_FEED_PRECISION) / PRECISION;
     }
 
-    //@note for handling multiple tokens with different decimals();
+    // for handling multiple tokens with different decimals() this would be a better approach
+    
     // function _getUSDValue2(address tokenAddress, uint256 amount) private view returns (uint256) {
     //     AggregatorV3Interface priceFeed = AggregatorV3Interface(s_tokenToPriceFeed[tokenAddress]);
     //     (, int256 price,,,) = priceFeed.latestRoundData();
@@ -618,11 +619,6 @@ contract Lending is ReentrancyGuard, Ownable {
     //     // Ensure proper type handling
     //     uint256 adjustedPrice = uint256(price); // Convert int256 to uint256
     //     uint256 scale = 10 ** uint256(decimals); // Calculate scaling factor
-
-    //     // 1 ETH = 1000 USD
-    //     // The returned value from Chainlink will be 1000 * 1e8
-    //     // Most USD pairs have 8 decimals, so we will just pretend they all do
-    //     // We want to have everything in terms of WEI, so we add 10 zeros at the end
     //     return (amount * adjustedPrice) / scale;
     // }
 
@@ -634,7 +630,7 @@ contract Lending is ReentrancyGuard, Ownable {
      */
     function _getTokenAmountFromUsd(address token, uint256 usdAmountInWei) private view returns (uint256) {
         AggregatorV3Interface priceFeed = AggregatorV3Interface(s_tokenToPriceFeed[token]);
-        (, int256 price,,,) = priceFeed.latestRoundData();
+        (, int256 price,,,) = priceFeed.staleCheckLatestRoundData();
         // Safe conversion:
         // 1. Multiply usdAmount (18 decimals) by PRECISION (1e18) = 36 decimals intermediate
         // 2. Divide by (price (8 decimals) * ADDITIONAL_FEED_PRECISION (1e10)) = 18 decimals

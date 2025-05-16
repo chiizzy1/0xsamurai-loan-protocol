@@ -117,14 +117,6 @@ contract LendingTest is Test {
         assertEq(daiPrice, DAI_USD_PRICE, "Incorrect DAI price");
     }
 
-    function testGetTokenAmountFromUsd2() public {
-        // If we want $100 of WETH @ $2000/WETH, that would be 0.05 WETH
-        uint256 expectedWeth = 0.05 ether;
-        uint256 amountWeth = lending.getTokenAmountFromUsd(weth, 100 ether);
-        console.log("Amount of WETH for $100: ", amountWeth);
-        assertEq(amountWeth, expectedWeth);
-    }
-
     function testGetTokenAmountFromUsd() public {
         // Test cases:
         // 1. Convert $2000 to WETH (should get 1 WETH since price is $2000/WETH)
@@ -173,6 +165,17 @@ contract LendingTest is Test {
     //////////////////////////
     // Deposit Tests        //
     //////////////////////////
+
+    function testProtocolReceivesFaucet() public {
+        // Check if the lending contract received the tokens from the faucet
+        uint256 wethBalance = IERC20(weth).balanceOf(address(lending));
+        uint256 wbtcBalance = IERC20(wbtc).balanceOf(address(lending));
+        uint256 daiBalance = IERC20(dai).balanceOf(address(lending));
+
+        assertEq(wethBalance, WETH_FAUCET_AMOUNT, "Lending contract should receive 2 WETH from faucet");
+        assertEq(wbtcBalance, WBTC_FAUCET_AMOUNT, "Lending contract should receive 1 WBTC from faucet");
+        assertEq(daiBalance, DAI_FAUCET_AMOUNT, "Lending contract should receive 10_000 DAI from faucet");
+    }
 
     function testDepositCollateral() public funded(obofte) depositCollateral(obofte, weth, DEPOSIT_AMOUNT) {
         // Get user's token balance and contract's token balance
@@ -394,26 +397,43 @@ contract LendingTest is Test {
         lending.borrow(dai, weth, borrowAmount, userDeposit);
         vm.stopPrank();
 
-        // 2. Advance time for interest accrual
-        vm.warp(block.timestamp + 30 days);
+        // 2. Advance time for interest accrual and update Oracle timestamp
+        uint256 timeElapsed = 30 days;
+        vm.warp(block.timestamp + timeElapsed);
 
         // 3. Get loan details before liquidation and store initial balances
         (uint256 loanAmount,, uint256 interestAccrued,) = lending.getLoanDetails(obofte, dai, weth);
         uint256 totalDebt = loanAmount + interestAccrued;
-         // Store protocol's DAI and WETH balance before liquidation
+        // Store protocol's DAI and WETH balance before liquidation
         uint256 protocolDaiBalanceBefore = IERC20(dai).balanceOf(address(lending));
         uint256 protocolWethBalanceBefore = IERC20(weth).balanceOf(address(lending));
-        console.log("Protocol DAI balance before liquidation: ", protocolDaiBalanceBefore);
-        console.log("Protocol WETH balance before liquidation: ", protocolWethBalanceBefore);
 
-        // 4. ETH price crash to trigger liquidation
-        uint256 newEthPrice = 1500e8; // WETH price crashes from $2000 to $1500
-        MockV3Aggregator(wethUsdPriceFeed).updateAnswer(int256(newEthPrice));
+        // 4. Update price feeds for all tokens
+        uint80 roundId = 1;
+        uint256 startedAt = block.timestamp;
+        uint256 updatedAt = block.timestamp;
+        uint80 answeredInRound = 1;
+
+        // WETH price crash from $2000 to $1500
+        vm.mockCall(
+            wethUsdPriceFeed,
+            abi.encodeWithSelector(MockV3Aggregator.latestRoundData.selector),
+            abi.encode(roundId, 1500e8, startedAt, updatedAt, answeredInRound)
+        );
+        MockV3Aggregator(wethUsdPriceFeed).updateAnswer(1500e8);
+
+        // Keep DAI price stable at $1
+        vm.mockCall(
+            daiUsdPriceFeed,
+            abi.encodeWithSelector(MockV3Aggregator.latestRoundData.selector),
+            abi.encode(roundId, 1e8, startedAt, updatedAt, answeredInRound)
+        );
+        MockV3Aggregator(daiUsdPriceFeed).updateAnswer(1e8);
 
         // Verify position is now liquidatable
         uint256 healthFactor = lending.getUserLoanHealthFactor(obofte, dai, weth);
         assertTrue(healthFactor < 1e18, "Position should be liquidatable");
-
+        
         // 5. Prepare liquidator
         vm.startPrank(liquidator);
 
@@ -424,12 +444,10 @@ contract LendingTest is Test {
         // Calculate liquidation details:
         // 1. Convert debt amount to WETH (this is what liquidator should receive as base amount)
         uint256 debtInWeth = lending.getTokenAmountFromUsd(weth, lending.getUSDValue(dai, totalDebt));
-        // 2. Calculate 10% bonus of the WETH they receive
-        uint256 liquidatorBonus = (debtInWeth * 10) / 100;
+        // 2. Calculate 10% bonus of the locked collateral
+        uint256 liquidatorBonus = (userDeposit * 10) / 100;
         // 3. Total WETH the liquidator should receive
         uint256 expectedLiquidatorReward = debtInWeth + liquidatorBonus;
-        // 4. Remaining collateral stays with protocol as penalty fee
-        uint256 protocolProfit = userDeposit - debtInWeth;
 
         // 6. Expect liquidation event with correct parameters
         vm.expectEmit(true, true, true, true, address(lending));
@@ -440,25 +458,30 @@ contract LendingTest is Test {
         vm.stopPrank();
 
         // 8. Verify loan state after liquidation
-        (uint256 finalLoanAmount, uint256 finalCollateral,, Lending.LoanStatus status) = lending.getLoanDetails(obofte, dai, weth);
-        
+        (uint256 finalLoanAmount, uint256 finalCollateral,, Lending.LoanStatus status) =
+            lending.getLoanDetails(obofte, dai, weth);
+
         assertEq(finalLoanAmount, 0, "Loan amount should be cleared");
         assertEq(finalCollateral, 0, "Collateral should be cleared");
         assertEq(uint8(status), uint8(Lending.LoanStatus.LIQUIDATED), "Loan status should be LIQUIDATED");
 
         // 9. Verify token balances
         // Liquidator gets WETH equivalent to debt they paid + 10% bonus
-        assertEq(IERC20(weth).balanceOf(liquidator), expectedLiquidatorReward, "Liquidator should receive WETH worth their payment + bonus");
+        assertEq(
+            IERC20(weth).balanceOf(liquidator),
+            expectedLiquidatorReward,
+            "Liquidator should receive WETH worth their payment + bonus"
+        );
         // Protocol keeps remaining collateral as profit
         assertEq(
-            IERC20(weth).balanceOf(address(lending)), 
-            protocolWethBalanceBefore - expectedLiquidatorReward, 
+            IERC20(weth).balanceOf(address(lending)),
+            protocolWethBalanceBefore - expectedLiquidatorReward,
             "Protocol WETH balance after liquidation should be original - liquidator reward"
         );
         // Protocol receives full debt repayment
         assertEq(
-            IERC20(dai).balanceOf(address(lending)), 
-            protocolDaiBalanceBefore + totalDebt, 
+            IERC20(dai).balanceOf(address(lending)),
+            protocolDaiBalanceBefore + totalDebt,
             "Protocol DAI balance after liquidation should increase by debt amount"
         );
     }
