@@ -49,8 +49,8 @@ SamuraiLoan is a lending protocol that allows users to:
 
 ### Setup
 ```bash
-git clone <repository-url>
-cd samuraiLoan-protocol
+git clone https://github.com/chiizzy1/0xsamurai-loan-protocol.git
+cd 0xsamurai-loan-protocol
 forge install
 ```
 
