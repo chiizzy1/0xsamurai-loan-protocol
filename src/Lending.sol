@@ -306,8 +306,9 @@ contract Lending is ReentrancyGuard, Ownable {
         uint256 newTotalAmount = loan.amount + additionalAmount;
 
         // Calculate minimum required collateral for new total
-        uint256 minimumRequiredCollateralAmount = _calculateRequiredCollateral(borrowToken, collateralToken, newTotalAmount);
-        
+        uint256 minimumRequiredCollateralAmount =
+            _calculateRequiredCollateral(borrowToken, collateralToken, newTotalAmount);
+
         // Verify current collateral meets minimum requirement
         if (loan.collateralAmount < minimumRequiredCollateralAmount) {
             revert Lending__NotUpToMinimumCollateralRequiredForLoan(minimumRequiredCollateralAmount);
@@ -395,7 +396,7 @@ contract Lending is ReentrancyGuard, Ownable {
         moreThanZero(additionalCollateral)
     {
         Loan storage loan = s_loans[msg.sender][borrowToken][collateralToken];
-          if (loan.status != LoanStatus.ACTIVE || loan.amount == 0) {
+        if (loan.status != LoanStatus.ACTIVE || loan.amount == 0) {
             revert Lending__NoLoanFound();
         }
 
@@ -464,7 +465,12 @@ contract Lending is ReentrancyGuard, Ownable {
      * @param amount The amount being repaid
      * @return totalDue The total amount due including interest
      */
-    function _validateRepayment(Loan storage loan, uint256 amount) private view activeLoanExists(loan) returns (uint256 totalDue) {
+    function _validateRepayment(Loan storage loan, uint256 amount)
+        private
+        view
+        activeLoanExists(loan)
+        returns (uint256 totalDue)
+    {
         uint256 interest = _loanInterest(loan);
         totalDue = loan.amount + interest;
 

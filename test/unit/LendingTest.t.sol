@@ -1043,10 +1043,10 @@ contract LendingTest is Test {
 
     function testRevertsWhenCreatingDuplicateActiveLoan() public funded(obofte) {
         uint256 initialDeposit = 1 ether; // Initial 1 WETH deposit
-        uint256 borrowAmount = 500e18;    // Borrow 500 DAI
+        uint256 borrowAmount = 500e18; // Borrow 500 DAI
 
         vm.startPrank(obofte);
-        
+
         // First loan setup
         IERC20(weth).approve(address(lending), initialDeposit);
         lending.depositCollateral(weth, initialDeposit);
@@ -1098,9 +1098,9 @@ contract LendingTest is Test {
         vm.startPrank(debtor);
         vm.expectEmit(true, true, true, true, address(lending));
         emit LoanAmountIncreased(debtor, dai, weth, additionalAmount, expectedNewTotal);
-        
+
         lending.increaseBorrow(dai, weth, additionalAmount);
-        
+
         // Verify loan was updated
         (uint256 loanAmount,,, Lending.LoanStatus status) = lending.getLoanDetails(debtor, dai, weth);
         assertEq(loanAmount, expectedNewTotal, "Loan amount should increase");
@@ -1120,7 +1120,7 @@ contract LendingTest is Test {
         uint256 protocolBalance = ERC20(dai).balanceOf(address(lending));
         vm.prank(address(lending));
         ERC20(dai).transfer(address(1), protocolBalance);
-        
+
         vm.startPrank(debtor);
         vm.expectRevert(Lending.Lending__NotEnoughTokenInVaultToBorrow.selector);
         lending.increaseBorrow(dai, weth, 1 ether);
@@ -1129,10 +1129,10 @@ contract LendingTest is Test {
 
     function testIncreaseBorrowUpdatesLoanHistory() public withExistingLoan(debtor) {
         uint256 additionalAmount = 100e18; // Additional 100 DAI
-        
+
         vm.startPrank(debtor);
         lending.increaseBorrow(dai, weth, additionalAmount);
-        
+
         // Get loan history
         (
             bytes32[] memory loanIds,
@@ -1142,7 +1142,7 @@ contract LendingTest is Test {
             ,
             Lending.LoanStatus[] memory statuses
         ) = lending.getUserLoanHistory(debtor);
-        
+
         assertEq(borrowTokens[0], dai, "Borrow token should be DAI");
         assertEq(collateralTokens[0], weth, "Collateral token should be WETH");
         assertEq(amounts[0], BORROW_AMOUNT + additionalAmount, "Amount should include increase");
