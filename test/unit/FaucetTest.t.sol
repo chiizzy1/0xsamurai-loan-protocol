@@ -65,9 +65,9 @@ contract FaucetTest is Test {
         console.log("Final DAI balance:", finalDaiBalance);
 
         // Assert correct amounts were minted
-        assertEq(finalWethBalance - initialWethBalance, 2 ether, "Should receive 2 WETH");
-        assertEq(finalWbtcBalance - initialWbtcBalance, 1 ether, "Should receive 1 WBTC");
-        assertEq(finalDaiBalance - initialDaiBalance, 10_000 ether, "Should receive 10,000 DAI");
+        assertEq(finalWethBalance - initialWethBalance, 100_000 ether, "Should receive 100,000 WETH");
+        assertEq(finalWbtcBalance - initialWbtcBalance, 10_000 ether, "Should receive 10,000 WBTC");
+        assertEq(finalDaiBalance - initialDaiBalance, 100_000_000 ether, "Should receive 100,000,000 DAI");
     }
 
     function testCooldownPeriod() public {
@@ -107,8 +107,8 @@ contract FaucetTest is Test {
         faucetContract.requestTokens();
 
         // Both should have received tokens
-        assertEq(IERC20(weth).balanceOf(yamal), 2 ether, "Yamal should have 2 WETH");
-        assertEq(IERC20(weth).balanceOf(sakadinho), 2 ether, "Sakadinho should have 2 WETH");
+        assertEq(IERC20(weth).balanceOf(yamal), 100_000 ether, "Yamal should have 100,000 WETH");
+        assertEq(IERC20(weth).balanceOf(sakadinho), 100_000 ether, "Sakadinho should have 100,000 WETH");
     }
 
     function testRequestTokensEmitsCorrectEvent() public {
@@ -120,9 +120,9 @@ contract FaucetTest is Test {
         // Define the expected event
         emit FaucetTokens.TokensDistributed(
             obofte,
-            2 ether, // wethAmount
-            1 ether, // wbtcAmount
-            10_000 ether // daiAmount
+            100000 ether, // wethAmount
+            10000 ether, // wbtcAmount
+            100_000_000 ether // daiAmount
         );
         faucetContract.requestTokens();
         vm.stopPrank();

@@ -848,6 +848,30 @@ contract Lending is ReentrancyGuard, Ownable {
     //////////////////////////////////////////////////////////////*/
 
     /**
+     * @notice Gets the protocol's WETH balance
+     * @return The amount of WETH held by the protocol
+     */
+    function getProtocolWethBalance() external view returns (uint256) {
+        return IERC20(s_allowedTokens[0]).balanceOf(address(this));
+    }
+
+    /**
+     * @notice Gets the protocol's WBTC balance
+     * @return The amount of WBTC held by the protocol
+     */
+    function getProtocolWbtcBalance() external view returns (uint256) {
+        return IERC20(s_allowedTokens[1]).balanceOf(address(this));
+    }
+
+    /**
+     * @notice Gets the protocol's DAI balance
+     * @return The amount of DAI held by the protocol
+     */
+    function getProtocolDaiBalance() external view returns (uint256) {
+        return IERC20(s_allowedTokens[2]).balanceOf(address(this));
+    }
+
+    /**
      * @notice Gets the allowed tokens in the protocol
      * @return An array of allowed token addresses
      */

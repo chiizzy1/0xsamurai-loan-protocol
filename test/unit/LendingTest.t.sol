@@ -80,11 +80,6 @@ contract LendingTest is Test {
             helperConfig.activeNetworkConfig();
 
         faucetContract = FaucetTokens(faucet);
-
-        // Fund the lending contract with initial liquidity using deal
-        deal(weth, address(lending), 1000 ether); // 1000 WETH
-        deal(wbtc, address(lending), 1000 ether); // 1000 WBTC
-        deal(dai, address(lending), 1_000_000 ether); // 1_000_000 DAI
     }
 
     //////////////////////////
@@ -106,6 +101,21 @@ contract LendingTest is Test {
         );
         new Lending(tokens, priceFeeds);
     }
+    //////////////////////////
+    //   Protocol fund Test //
+    //////////////////////////
+
+    function testProtocolIsFunded() public {
+        // Check if the protocol is funded with WETH
+        uint256 wethBalance = IERC20(weth).balanceOf(address(lending));
+        uint256 wbtcBalance = IERC20(wbtc).balanceOf(address(lending));
+        uint256 daiBalance = IERC20(dai).balanceOf(address(lending));
+
+        assertTrue(wethBalance > 0, "Lending contract should be funded with WETH");
+        assertTrue(wbtcBalance > 0, "Lending contract should be funded with WBTC");
+        assertTrue(daiBalance > 0, "Lending contract should be funded with DAI");
+    }
+
     //////////////////////////
     //   PriceFeed Test     //
     //////////////////////////
@@ -176,17 +186,6 @@ contract LendingTest is Test {
     //////////////////////////
     // Deposit Tests        //
     //////////////////////////
-
-    function testProtocolReceivesFaucet() public {
-        // Check if the lending contract received the tokens from the faucet
-        uint256 wethBalance = IERC20(weth).balanceOf(address(lending));
-        uint256 wbtcBalance = IERC20(wbtc).balanceOf(address(lending));
-        uint256 daiBalance = IERC20(dai).balanceOf(address(lending));
-
-        assertEq(wethBalance, 1000e18, "Lending contract should receive 1000 WETH from faucet");
-        assertEq(wbtcBalance, 1000e18, "Lending contract should receive 1000 WBTC from faucet");
-        assertEq(daiBalance, 1000000e18, "Lending contract should receive 1_000_000 DAI from faucet");
-    }
 
     function testDepositCollateral() public funded(obofte) depositCollateral(obofte, weth, DEPOSIT_AMOUNT) {
         // Get user's token balance and contract's token balance

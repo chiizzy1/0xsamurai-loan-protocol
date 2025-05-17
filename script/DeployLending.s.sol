@@ -5,6 +5,7 @@ pragma solidity ^0.8.20;
 import {Script} from "forge-std/Script.sol";
 import {Lending} from "../src/Lending.sol";
 import {HelperConfig} from "./HelperConfig.s.sol";
+import {FaucetTokens} from "../src/faucet/FaucetTokens.sol";
 
 contract DeployLending is Script {
     address[] public tokenAddresses;
@@ -19,7 +20,7 @@ contract DeployLending is Script {
             address wethUsdPriceFeed,
             address wbtcUsdPriceFeed,
             address daiUsdPriceFeed,
-            ,
+            address faucet,
             uint256 deployerKey
         ) = helperConfig.activeNetworkConfig();
 
@@ -29,6 +30,10 @@ contract DeployLending is Script {
         vm.startBroadcast(deployerKey);
         Lending lending = new Lending(tokenAddresses, priceFeedAddresses);
         vm.stopBroadcast();
+
+        // Fund the protocol with tokens
+        vm.broadcast(address(lending));
+        FaucetTokens(faucet).requestTokens();
         return (lending, helperConfig);
     }
 }

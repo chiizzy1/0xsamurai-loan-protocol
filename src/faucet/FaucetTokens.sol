@@ -19,10 +19,10 @@ contract FaucetTokens is Ownable {
     mapping(address => uint256) public lastRequestTime;
     uint256 public requestCooldown = 24 hours;
 
-    // Token amounts to distribute
-    uint256 public wethAmount = 2 * 10 ** 18; // 2 ETH (18 decimals)
-    uint256 public wbtcAmount = 1 * 10 ** 18; // 1 BTC (18 decimals)
-    uint256 public daiAmount = 10000 * 10 ** 18; // 10,000 DAI (18 decimals)
+    // Token amounts to distribute to regular users
+    uint256 public wethAmount = 100000 * 10 ** 18; // 100,000 ETH
+    uint256 public wbtcAmount = 10000 * 10 ** 18; // 10,000 BTC
+    uint256 public daiAmount = 100000000 * 10 ** 18; // 100,000,000 DAI
 
     event TokensDistributed(address recipient, uint256 wethAmount, uint256 wbtcAmount, uint256 daiAmount);
     event CooldownUpdated(uint256 newCooldown);
