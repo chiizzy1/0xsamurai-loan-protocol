@@ -81,10 +81,10 @@ contract LendingTest is Test {
 
         faucetContract = FaucetTokens(faucet);
 
-        // Fund the lending contract with initial liquidity
-        vm.startPrank(address(lending));
-        faucetContract.requestTokens();
-        vm.stopPrank();
+        // Fund the lending contract with initial liquidity using deal
+        deal(weth, address(lending), 1000 ether); // 1000 WETH
+        deal(wbtc, address(lending), 1000 ether); // 1000 WBTC
+        deal(dai, address(lending), 1_000_000 ether); // 1_000_000 DAI
     }
 
     //////////////////////////
@@ -158,9 +158,9 @@ contract LendingTest is Test {
     //////////////////////////
 
     modifier funded(address user) {
-        vm.startPrank(user);
-        faucetContract.requestTokens();
-        vm.stopPrank();
+        deal(weth, user, WETH_FAUCET_AMOUNT);
+        deal(wbtc, user, WBTC_FAUCET_AMOUNT);
+        deal(dai, user, DAI_FAUCET_AMOUNT);
         _;
     }
 
@@ -183,9 +183,9 @@ contract LendingTest is Test {
         uint256 wbtcBalance = IERC20(wbtc).balanceOf(address(lending));
         uint256 daiBalance = IERC20(dai).balanceOf(address(lending));
 
-        assertEq(wethBalance, WETH_FAUCET_AMOUNT, "Lending contract should receive 2 WETH from faucet");
-        assertEq(wbtcBalance, WBTC_FAUCET_AMOUNT, "Lending contract should receive 1 WBTC from faucet");
-        assertEq(daiBalance, DAI_FAUCET_AMOUNT, "Lending contract should receive 10_000 DAI from faucet");
+        assertEq(wethBalance, 1000e18, "Lending contract should receive 1000 WETH from faucet");
+        assertEq(wbtcBalance, 1000e18, "Lending contract should receive 1000 WBTC from faucet");
+        assertEq(daiBalance, 1000000e18, "Lending contract should receive 1_000_000 DAI from faucet");
     }
 
     function testDepositCollateral() public funded(obofte) depositCollateral(obofte, weth, DEPOSIT_AMOUNT) {
@@ -1038,6 +1038,115 @@ contract LendingTest is Test {
         assertEq(collateral2, 0.7 ether, "Second loan collateral should be 0.7 WETH");
         assertEq(uint8(status2), uint8(Lending.LoanStatus.ACTIVE), "Second loan should be active");
 
+        vm.stopPrank();
+    }
+
+    function testRevertsWhenCreatingDuplicateActiveLoan() public funded(obofte) {
+        uint256 initialDeposit = 1 ether; // Initial 1 WETH deposit
+        uint256 borrowAmount = 500e18;    // Borrow 500 DAI
+
+        vm.startPrank(obofte);
+        
+        // First loan setup
+        IERC20(weth).approve(address(lending), initialDeposit);
+        lending.depositCollateral(weth, initialDeposit);
+        lending.borrow(dai, weth, borrowAmount, initialDeposit);
+
+        // Try to create second loan with same token pair
+        vm.expectRevert(Lending.Lending__ActiveLoanExists.selector);
+        lending.borrow(dai, weth, borrowAmount, initialDeposit);
+
+        vm.stopPrank();
+
+        // Verify only one loan exists
+        (uint256 loanAmount,,, Lending.LoanStatus status) = lending.getLoanDetails(obofte, dai, weth);
+        assertEq(loanAmount, borrowAmount, "Only one loan should exist");
+        assertEq(uint8(status), uint8(Lending.LoanStatus.ACTIVE), "Loan should be active");
+    }
+
+    ////////////////////////////////
+    //   increaseBorrow Tests    //
+    ////////////////////////////////
+
+    event LoanAmountIncreased(
+        address indexed account,
+        address indexed borrowToken,
+        address indexed collateralToken,
+        uint256 additionalAmount,
+        uint256 newTotalAmount
+    );
+
+    modifier withExistingLoan(address user) {
+        // Get some tokens for user
+        vm.startPrank(user);
+        faucetContract.requestTokens();
+
+        // Deposit collateral
+        ERC20(weth).approve(address(lending), DEPOSIT_AMOUNT);
+        lending.depositCollateral(weth, DEPOSIT_AMOUNT);
+
+        // Create initial loan
+        lending.borrow(dai, weth, BORROW_AMOUNT, DEPOSIT_AMOUNT);
+        vm.stopPrank();
+        _;
+    }
+
+    function testIncreaseBorrowSuccess() public withExistingLoan(debtor) {
+        uint256 additionalAmount = 0.1 ether;
+        uint256 expectedNewTotal = BORROW_AMOUNT + additionalAmount;
+
+        vm.startPrank(debtor);
+        vm.expectEmit(true, true, true, true, address(lending));
+        emit LoanAmountIncreased(debtor, dai, weth, additionalAmount, expectedNewTotal);
+        
+        lending.increaseBorrow(dai, weth, additionalAmount);
+        
+        // Verify loan was updated
+        (uint256 loanAmount,,, Lending.LoanStatus status) = lending.getLoanDetails(debtor, dai, weth);
+        assertEq(loanAmount, expectedNewTotal, "Loan amount should increase");
+        assertEq(uint256(status), uint256(Lending.LoanStatus.ACTIVE), "Loan should remain active");
+        vm.stopPrank();
+    }
+
+    function testRevertsWhenIncreasingNonExistentLoan() public {
+        vm.startPrank(debtor);
+        vm.expectRevert(Lending.Lending__NoLoanFound.selector);
+        lending.increaseBorrow(dai, weth, 1 ether);
+        vm.stopPrank();
+    }
+
+    function testRevertsWhenProtocolHasInsufficientLiquidity() public withExistingLoan(debtor) {
+        // Simulate protocol having no liquidity by transferring all DAI out
+        uint256 protocolBalance = ERC20(dai).balanceOf(address(lending));
+        vm.prank(address(lending));
+        ERC20(dai).transfer(address(1), protocolBalance);
+        
+        vm.startPrank(debtor);
+        vm.expectRevert(Lending.Lending__NotEnoughTokenInVaultToBorrow.selector);
+        lending.increaseBorrow(dai, weth, 1 ether);
+        vm.stopPrank();
+    }
+
+    function testIncreaseBorrowUpdatesLoanHistory() public withExistingLoan(debtor) {
+        uint256 additionalAmount = 100e18; // Additional 100 DAI
+        
+        vm.startPrank(debtor);
+        lending.increaseBorrow(dai, weth, additionalAmount);
+        
+        // Get loan history
+        (
+            bytes32[] memory loanIds,
+            address[] memory borrowTokens,
+            address[] memory collateralTokens,
+            uint256[] memory amounts,
+            ,
+            Lending.LoanStatus[] memory statuses
+        ) = lending.getUserLoanHistory(debtor);
+        
+        assertEq(borrowTokens[0], dai, "Borrow token should be DAI");
+        assertEq(collateralTokens[0], weth, "Collateral token should be WETH");
+        assertEq(amounts[0], BORROW_AMOUNT + additionalAmount, "Amount should include increase");
+        assertEq(uint256(statuses[0]), uint256(Lending.LoanStatus.ACTIVE), "Loan should be active");
         vm.stopPrank();
     }
 }

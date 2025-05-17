@@ -25,6 +25,7 @@ contract Lending is ReentrancyGuard, Ownable {
     error Lending__PriceFeedAddressZero();
     error Lending__NeedsMoreThanZero();
     error Lending__UnsupportedToken(address tokenAddress);
+    error Lending__ActiveLoanExists();
     error Lending__DepositFailed();
     error Lending__InsufficientTokenBalance(uint256 userBalance);
     error Lending__NotUpToMinimumCollateralRequiredForLoan(uint256 minimumRequiredCollateralAmount);
@@ -112,6 +113,13 @@ contract Lending is ReentrancyGuard, Ownable {
         uint256 borrowAmount,
         uint256 collateralAmount
     );
+    event LoanAmountIncreased(
+        address indexed account,
+        address indexed borrowToken,
+        address indexed collateralToken,
+        uint256 additionalAmount,
+        uint256 newTotalAmount
+    );
     event LoanRepaid(
         address indexed account, address indexed borrowToken, address indexed collateralToken, uint256 amount
     );
@@ -146,6 +154,17 @@ contract Lending is ReentrancyGuard, Ownable {
     modifier isAllowedToken(address tokenAddress) {
         if (s_tokenToPriceFeed[tokenAddress] == address(0)) {
             revert Lending__UnsupportedToken(tokenAddress);
+        }
+        _;
+    }
+
+    /**
+     * @notice Modifier to check if a loan exists and is active
+     * @param loan The loan to check
+     */
+    modifier activeLoanExists(Loan storage loan) {
+        if (loan.status != LoanStatus.ACTIVE || loan.amount == 0) {
+            revert Lending__NoLoanFound();
         }
         _;
     }
@@ -256,6 +275,57 @@ contract Lending is ReentrancyGuard, Ownable {
     }
 
     /**
+     * @notice Allows users to increase the borrowed amount of an existing loan
+     * @param borrowToken The token previously borrowed
+     * @param collateralToken The token used as collateral
+     * @param additionalAmount The additional amount to borrow
+     * @dev Ensures sufficient collateral value and protocol liquidity
+     * @dev Uses nonReentrant to prevent reentrancy during token transfer
+     * @dev Emits LoanAmountIncreased event upon successful increase
+     */
+    function increaseBorrow(address borrowToken, address collateralToken, uint256 additionalAmount)
+        external
+        nonReentrant
+        isAllowedToken(borrowToken)
+        isAllowedToken(collateralToken)
+        moreThanZero(additionalAmount)
+    {
+        // Get the existing loan
+        Loan storage loan = s_loans[msg.sender][borrowToken][collateralToken];
+        if (loan.status != LoanStatus.ACTIVE || loan.amount == 0) {
+            revert Lending__NoLoanFound();
+        }
+
+        // Check protocol liquidity
+        uint256 protocolTokenBalance = IERC20(borrowToken).balanceOf(address(this));
+        if (protocolTokenBalance < additionalAmount) {
+            revert Lending__NotEnoughTokenInVaultToBorrow();
+        }
+
+        // Calculate new total amount
+        uint256 newTotalAmount = loan.amount + additionalAmount;
+
+        // Calculate minimum required collateral for new total
+        uint256 minimumRequiredCollateralAmount = _calculateRequiredCollateral(borrowToken, collateralToken, newTotalAmount);
+        
+        // Verify current collateral meets minimum requirement
+        if (loan.collateralAmount < minimumRequiredCollateralAmount) {
+            revert Lending__NotUpToMinimumCollateralRequiredForLoan(minimumRequiredCollateralAmount);
+        }
+
+        // Update loan amount
+        loan.amount = newTotalAmount;
+
+        // Also update the loan in s_loanById mapping
+        s_loanById[loan.id].amount = newTotalAmount;
+
+        // Transfer additional borrowed tokens to user
+        emit LoanAmountIncreased(msg.sender, borrowToken, collateralToken, additionalAmount, newTotalAmount);
+        bool success = IERC20(borrowToken).transfer(msg.sender, additionalAmount);
+        if (!success) revert Lending__BorrowngTokenFailed();
+    }
+
+    /**
      * @notice Allows users to repay their specific loan
      * @param borrowToken The token address that was borrowed
      * @param collateralToken The token address used as collateral
@@ -325,8 +395,7 @@ contract Lending is ReentrancyGuard, Ownable {
         moreThanZero(additionalCollateral)
     {
         Loan storage loan = s_loans[msg.sender][borrowToken][collateralToken];
-
-        if (loan.status != LoanStatus.ACTIVE || loan.amount == 0) {
+          if (loan.status != LoanStatus.ACTIVE || loan.amount == 0) {
             revert Lending__NoLoanFound();
         }
 
@@ -395,11 +464,7 @@ contract Lending is ReentrancyGuard, Ownable {
      * @param amount The amount being repaid
      * @return totalDue The total amount due including interest
      */
-    function _validateRepayment(Loan storage loan, uint256 amount) private view returns (uint256 totalDue) {
-        if (loan.status != LoanStatus.ACTIVE || loan.amount == 0) {
-            revert Lending__NoLoanFound();
-        }
-
+    function _validateRepayment(Loan storage loan, uint256 amount) private view activeLoanExists(loan) returns (uint256 totalDue) {
         uint256 interest = _loanInterest(loan);
         totalDue = loan.amount + interest;
 
@@ -460,6 +525,12 @@ contract Lending is ReentrancyGuard, Ownable {
         // check for same token
         if (borrowToken == collateralToken) {
             revert Lending__SameTokenNotAllowed();
+        }
+
+        // Check if an active loan already exists for these token pairs
+        Loan storage existingLoan = s_loans[msg.sender][borrowToken][collateralToken];
+        if (existingLoan.status == LoanStatus.ACTIVE) {
+            revert Lending__ActiveLoanExists();
         }
 
         // Check if protocol has enough tokens to lend
@@ -583,11 +654,8 @@ contract Lending is ReentrancyGuard, Ownable {
     function _validateLiquidation(address account, address borrowToken, address collateralToken, Loan storage loan)
         private
         view
+        activeLoanExists(loan)
     {
-        if (loan.status != LoanStatus.ACTIVE || loan.amount == 0) {
-            revert Lending__NoLoanFound();
-        }
-
         uint256 loanHealthFactor = _calculateLoanHealthFactor(account, borrowToken, collateralToken);
         if (loanHealthFactor >= MIN_HEALTH_FACTOR) {
             revert Lending__AccountHealthFactorGreaterThanOrEqualToMinimumRequired(loanHealthFactor);
