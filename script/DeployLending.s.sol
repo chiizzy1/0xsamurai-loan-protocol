@@ -31,9 +31,8 @@ contract DeployLending is Script {
         Lending lending = new Lending(tokenAddresses, priceFeedAddresses);
         vm.stopBroadcast();
 
-        // Fund the protocol with tokens
-        vm.broadcast(address(lending));
-        FaucetTokens(faucet).requestTokens();
+        // Request tokens to be minted directly to the lending contract
+        FaucetTokens(faucet).requestTokensFor(address(lending));
         return (lending, helperConfig);
     }
 }

@@ -41,13 +41,13 @@ contract HelperConfig is Script {
 
     function getSepoliaEthConfig() public view returns (NetworkConfig memory sepoliaNetworkConfig) {
         sepoliaNetworkConfig = NetworkConfig({
-            weth: 0x9D2A552e4bb926B9A1Bcc0723005CE45555d517c, // Deployed WETH
-            wbtc: 0xA59Ef4a38b60200866086e4e6503c2844e71D0ad, // Deployed WBTC
-            dai: 0x89B2194e8A1A6573871Be90f16A41aafF435292B, // Deployed DAI
+            weth: 0xa550bc219F151353e92979eAC717E958800eaABf, // Deployed WETH
+            wbtc: 0xE17002758791c5C2A8A2654f5E719607F4A7Fc18, // Deployed WBTC
+            dai: 0xACe6a5728D161B01437594aB0a501187e521AEE6, // Deployed DAI
             wethUsdPriceFeed: 0x694AA1769357215DE4FAC081bf1f309aDC325306, // Sepolia ETH/USD
             wbtcUsdPriceFeed: 0x1b44F3514812d835EB1BDB0acB33d3fA3351Ee43, // Sepolia BTC/USD
             daiUsdPriceFeed: 0x14866185B1962B63C3Ea9E03Bc1da838bab34C19, // Sepolia DAI/USD
-            faucet: 0xd545c86a625Fdf3b39F9EDFf0dD66F6f0b97b2C8, // Deployed Faucet
+            faucet: 0x1afe87187A4f032BfA745D02a4639eDE6d4a1e71, // Deployed Faucet
             deployerKey: vm.envUint("PRIVATE_KEY")
         });
     }

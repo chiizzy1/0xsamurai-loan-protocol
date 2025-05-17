@@ -62,6 +62,33 @@ contract FaucetTokens is Ownable {
     }
 
     /**
+     * @dev Request tokens from the faucet for a specific recipient
+     * @param recipient Address that will receive the tokens
+     */
+    function requestTokensFor(address recipient) external {
+        if (recipient == address(0)) {
+            revert FaucetTokens__AddressZeroIsNotAllowed();
+        }
+
+        // Check if this is first request or cooldown has passed for the sender
+        if (lastRequestTime[recipient] != 0) {
+            if (block.timestamp < lastRequestTime[recipient] + requestCooldown) {
+                revert FaucetTokens__24HoursCooldownPeriodIsRequired(lastRequestTime[recipient]);
+            }
+        }
+
+        // Update last request time for the sender
+        lastRequestTime[recipient] = block.timestamp;
+
+        // Mint tokens to the specified recipient
+        weth.mint(recipient, wethAmount);
+        wbtc.mint(recipient, wbtcAmount);
+        dai.mint(recipient, daiAmount);
+
+        emit TokensDistributed(recipient, wethAmount, wbtcAmount, daiAmount);
+    }
+
+    /**
      * @dev Allow the owner to update token distribution amounts
      */
     function setDistributionAmounts(uint256 _wethAmount, uint256 _wbtcAmount, uint256 _daiAmount) external onlyOwner {
