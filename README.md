@@ -38,7 +38,7 @@ SamuraiLoan is a lending protocol that allows users to:
 - WBTC: `0x87196979027b5CBc15c2A599F280fA84A0a60938`
 - DAI: `0x33947860a94AC4938554F0B972Ea53588d7e3884`
 - Faucet: `0x5876c82aA09e46B37450e1527210e3d36AeCc8bE`
-- Lending Protocol: `0x32dc459685Cf36F9a2AF307D2dADb616DE5F71a9`
+- Lending Protocol: `0xC5Ce759E0b20D5b455ca6684646a7b830E86acCA`
 
 ## Development
 
@@ -52,6 +52,22 @@ SamuraiLoan is a lending protocol that allows users to:
 git clone https://github.com/chiizzy1/0xsamurai-loan-protocol.git
 cd 0xsamurai-loan-protocol
 forge install
+```
+
+### Environment Variables
+Create a `.env` file in the root directory and add the following variables:
+```env
+# Deployment
+PRIVATE_KEY=your_wallet_private_key
+SEPOLIA_RPC_URL=your_sepolia_rpc_url
+ETHERSCAN_API_KEY=your_etherscan_api_key
+
+# Local Development
+RPC_URL=http://127.0.0.1:8545  # Default Anvil URL
+```
+You can copy `.env.example` to `.env` and fill in your values:
+```bash
+cp .env.example .env
 ```
 
 ### Build

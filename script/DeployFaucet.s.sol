@@ -25,12 +25,3 @@ contract DeployFaucet is Script {
         return (weth, wbtc, dai, faucet);
     }
 }
-
-// source .env
-// forge script script/DeployFaucet.s.sol --rpc-url $SEPOLIA_RPC_URL --private-key $PRIVATE_KEY --broadcast --etherscan-api-key $ETHERSCAN_API_KEY --verify -vvvv
-
-// == Return ==
-// 0: contract WETH 0x19c1507940AE9e42203e5FA368078Cb7E18ED9db
-// 1: contract WBTC 0x87196979027b5CBc15c2A599F280fA84A0a60938
-// 2: contract DAI 0x33947860a94AC4938554F0B972Ea53588d7e3884
-// 3: contract FaucetTokens 0x5876c82aA09e46B37450e1527210e3d36AeCc8bE

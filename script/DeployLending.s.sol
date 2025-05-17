@@ -32,9 +32,3 @@ contract DeployLending is Script {
         return (lending, helperConfig);
     }
 }
-
-// forge script script/DeployLending.s.sol --rpc-url $SEPOLIA_RPC_URL --private-key $PRIVATE_KEY --broadcast --etherscan-api-key $ETHERSCAN_API_KEY --verify -vvvv
-
-// == Return ==
-// 0: contract Lending 0x32dc459685Cf36F9a2AF307D2dADb616DE5F71a9
-// 1: contract HelperConfig 0xC7f2Cf4845C6db0e1a1e91ED41Bcd0FcC1b0E141

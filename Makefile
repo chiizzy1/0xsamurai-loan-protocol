@@ -17,36 +17,26 @@ deploy-faucet:
 
 # Deploy lending protocol to Sepolia
 deploy-lending:
-	forge script script/DeployLending.s.sol \
+	@forge script script/DeployLending.s.sol \
 		--rpc-url ${SEPOLIA_RPC_URL} \
 		--private-key ${PRIVATE_KEY} \
 		--broadcast \
 		--etherscan-api-key ${ETHERSCAN_API_KEY} \
 		--verify \
 		-vvvv
+	@echo "Lending contract deployed successfully!"
+	@echo "Lending contract address: $$(forge inspect --json $$(forge script script/DeployLending.s.sol --rpc-url ${SEPOLIA_RPC_URL} --private-key ${PRIVATE_KEY} --broadcast | jq -r '.deployments[0].address'))"
+	@echo "Lending contract verified on Etherscan!"
 
 # Deploy both contracts
 deploy-all: deploy-faucet deploy-lending
-deploy-sepolia:
-    @forge script script/DeployLending.s.sol \
-        --rpc-url ${SEPOLIA_RPC_URL} \
-        --private-key ${PRIVATE_KEY} \
-        --broadcast \
-        --etherscan-api-key ${ETHERSCAN_API_KEY} \
-        --verify \
-        -vvvv
-    @echo "Lending contract deployed successfully!"
-    @echo "Lending contract address: $$(forge inspect --json $$(forge script script/DeployLending.s.sol --rpc-url ${SEPOLIA_RPC_URL} --private-key ${PRIVATE_KEY} --broadcast | jq -r '.deployments[0].address'))"
-    @echo "Lending contract verified on Etherscan!"
 
 # Deploy lending protocol to local Anvil chain
 deploy-anvil:
-    @forge script script/DeployLending.s.sol \
-        --rpc-url http://localhost:8545 \
-        --private-key $(DEFAULT_ANVIL_KEY) \
-        --broadcast
-
-
+	@forge script script/DeployLending.s.sol \
+		--rpc-url http://localhost:8545 \
+		--private-key $(DEFAULT_ANVIL_KEY) \
+		--broadcast
 
 # --rpc-url: Points to Sepolia/Anvil network
 # --private-key: Your deployment wallet's private key

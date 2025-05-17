@@ -1046,26 +1046,5 @@ contract Lending is ReentrancyGuard, Ownable {
      * @notice Allows the contract to receive ETH
      */
 
-    //@note even if a user didn't deposit collateral with the `depositCollateral()`, call it on their behalf and keep track of all the funds that enters this protocol
     receive() external payable {}
 }
-
-//@note
-// External vs Public Functions:
-// External
-// - External functions are more gas-efficient than public functions because they read parameters directly from calldata rather than copying them to memory
-// - They can only be called from outside the contract, making them ideal for functions that should never be called internally. A good example is a liquidation function that should only be triggered by external users.
-
-// Public
-// - Public functions are more flexible but more expensive in terms of gas. They can be called both from outside the contract and from within other functions in the contract.
-// - They're useful when you need a function to be accessible both internally and externally, like a deposit function that might be called by users directly or used as part of other contract operations.
-
-// Private vs Internal Functions:
-// Private
-// - Private functions are the most restrictive - they can only be accessed within the same contract and are not visible to derived contracts.
-// - They're perfect for sensitive calculations or logic that should never be exposed
-
-// Internal
-// - Internal functions are more flexible - they can be accessed within the same contract and by any derived contracts.
-
-// - They're ideal for shared logic that might need to be reused or extended by child contracts, like balance update functions that might need to be customized in different implementations.
