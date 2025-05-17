@@ -39,6 +39,17 @@ contract LendingTest is Test {
     uint256 public constant BTC_USD_PRICE = 100_000e18; //$100,000/BTC
     uint256 public constant DAI_USD_PRICE = 1e18; //$1/DAI --> stablecoin
 
+    struct LoanSnapshot {
+        bytes32 id;
+        uint256 amount;
+        uint256 interest;
+        uint256 startTime;
+        Lending.LoanStatus status;
+        uint256 collateralAmount;
+        address borrowToken;
+        address collateralToken;
+    }
+
     // Events we expect from Lending.sol
     event CollateralDeposited(address indexed account, address indexed tokenAddress, uint256 amount);
     event CollateralRedeemed(address indexed account, address indexed tokenAddress, uint256 amount);
@@ -433,7 +444,7 @@ contract LendingTest is Test {
         // Verify position is now liquidatable
         uint256 healthFactor = lending.getUserLoanHealthFactor(obofte, dai, weth);
         assertTrue(healthFactor < 1e18, "Position should be liquidatable");
-        
+
         // 5. Prepare liquidator
         vm.startPrank(liquidator);
 
@@ -573,6 +584,460 @@ contract LendingTest is Test {
             )
         );
         lending.withdrawCollateral(weth, DEPOSIT_AMOUNT);
+        vm.stopPrank();
+    }
+
+    function testInterestCalculation() public funded(obofte) {
+        uint256 borrowAmount = 500e18; // Borrow 500 DAI
+        uint256 timeElapsed = 365 days; // 1 year
+
+        // Setup loan
+        vm.startPrank(obofte);
+        IERC20(weth).approve(address(lending), DEPOSIT_AMOUNT);
+        lending.depositCollateral(weth, DEPOSIT_AMOUNT);
+        lending.borrow(dai, weth, borrowAmount, DEPOSIT_AMOUNT);
+
+        // Advance time
+        vm.warp(block.timestamp + timeElapsed);
+
+        // Get accrued interest
+        (,, uint256 interestAccrued,) = lending.getLoanDetails(obofte, dai, weth);
+
+        // Expected interest = principal * rate * time / (SECONDS_PER_YEAR * INTEREST_PRECISION)
+        // 500e18 * 3 * 31536000 / (31536000 * 100) = 15e18 DAI
+        assertEq(interestAccrued, 15e18, "Interest calculation incorrect");
+        vm.stopPrank();
+    }
+
+    function testAddAndFreeCollateral() public funded(obofte) {
+        uint256 borrowAmount = 500e18; // Borrow 500 DAI
+        uint256 initialDeposit = 0.5 ether; // Initial 0.5 WETH deposit
+        uint256 additionalCollateral = 0.25 ether; // Add 0.25 WETH more
+
+        // Setup initial loan
+        vm.startPrank(obofte);
+        IERC20(weth).approve(address(lending), DEPOSIT_AMOUNT * 2); // Approve enough for both initial and additional
+
+        // First, deposit both initial and additional collateral
+        lending.depositCollateral(weth, initialDeposit + additionalCollateral);
+
+        // Setup loan with initial collateral
+        lending.borrow(dai, weth, borrowAmount, initialDeposit);
+
+        // Add more collateral to the loan
+        lending.addCollateralToLoan(dai, weth, additionalCollateral);
+
+        // Verify collateral was added
+        (, uint256 collateralAmount,,) = lending.getLoanDetails(obofte, dai, weth);
+        assertEq(collateralAmount, initialDeposit + additionalCollateral, "Collateral not added correctly");
+
+        // Free some collateral
+        lending.freeCollateralFromLoan(dai, weth, additionalCollateral);
+
+        // Verify collateral was freed
+        (, uint256 newCollateralAmount,,) = lending.getLoanDetails(obofte, dai, weth);
+        assertEq(newCollateralAmount, initialDeposit, "Collateral not freed correctly");
+        vm.stopPrank();
+    }
+
+    function testRevertsWhenFreeTooMuchCollateral() public funded(obofte) {
+        uint256 borrowAmount = 500e18; // Borrow 500 DAI
+        uint256 collateralAmount = 0.5 ether; // 0.5 WETH as collateral
+
+        // Setup loan
+        vm.startPrank(obofte);
+        IERC20(weth).approve(address(lending), DEPOSIT_AMOUNT);
+        lending.depositCollateral(weth, collateralAmount);
+        lending.borrow(dai, weth, borrowAmount, collateralAmount);
+
+        // Try to free more collateral than the minimum required for the loan
+        // For a $500 DAI loan at 80% LTV, we need $625 worth of collateral
+        // With WETH at $2000/ETH, that's 0.3125 ETH minimum required
+        // (500 * 100/80 = 625 USD needed, 625/2000 = 0.3125 WETH)
+        uint256 minimumRequired = 0.3125 ether;
+        vm.expectRevert(
+            abi.encodeWithSelector(Lending.Lending__NotUpToMinimumCollateralRequiredForLoan.selector, minimumRequired)
+        );
+        lending.freeCollateralFromLoan(dai, weth, 0.2 ether);
+        vm.stopPrank();
+    }
+
+    function testGetAllowedTokens() public {
+        address[] memory allowedTokens = lending.getAllowedTokens();
+        assertEq(allowedTokens.length, 3, "Should have 3 allowed tokens");
+        assertEq(allowedTokens[0], weth, "WETH should be allowed");
+        assertEq(allowedTokens[1], wbtc, "WBTC should be allowed");
+        assertEq(allowedTokens[2], dai, "DAI should be allowed");
+    }
+
+    function testGetUserLoansWithStatus() public funded(obofte) {
+        // Setup first loan
+        vm.startPrank(obofte);
+        IERC20(weth).approve(address(lending), DEPOSIT_AMOUNT);
+        lending.depositCollateral(weth, DEPOSIT_AMOUNT);
+        lending.borrow(dai, weth, 500e18, DEPOSIT_AMOUNT);
+        vm.stopPrank();
+
+        // Get active loans
+        (
+            address[] memory borrowTokens,
+            address[] memory collateralTokens,
+            uint256[] memory amounts,
+            uint256[] memory collateralAmounts
+        ) = lending.getUserLoansWithStatus(obofte, Lending.LoanStatus.ACTIVE);
+
+        // Verify loan details
+        assertEq(borrowTokens.length, 1, "Should have 1 active loan");
+        assertEq(borrowTokens[0], dai, "Borrow token should be DAI");
+        assertEq(collateralTokens[0], weth, "Collateral token should be WETH");
+        assertEq(amounts[0], 500e18, "Borrow amount should be 500 DAI");
+        assertEq(collateralAmounts[0], DEPOSIT_AMOUNT, "Collateral amount should be 1 WETH");
+    }
+
+    function testLoanIdAndStorageWhenBorrowing() public funded(obofte) {
+        // Setup
+        uint256 borrowAmount = 500e18; // 500 DAI
+
+        vm.startPrank(obofte);
+        IERC20(weth).approve(address(lending), DEPOSIT_AMOUNT);
+        lending.depositCollateral(weth, DEPOSIT_AMOUNT);
+
+        // Borrow and capture event
+        vm.expectEmit(true, true, true, true, address(lending));
+        emit LoanCreated(obofte, dai, weth, borrowAmount, DEPOSIT_AMOUNT);
+        lending.borrow(dai, weth, borrowAmount, DEPOSIT_AMOUNT);
+
+        // Get loan details to verify storage
+        (bytes32[] memory loanIds) = lending.getUserLoanIds(obofte);
+        assertEq(loanIds.length, 1, "User should have 1 loan");
+
+        Lending.Loan memory loan = lending.getLoanById(loanIds[0]);
+        assertEq(loan.amount, borrowAmount, "Loan amount mismatch");
+        assertEq(loan.collateralAmount, DEPOSIT_AMOUNT, "Collateral amount mismatch");
+        assertEq(loan.borrowToken, dai, "Borrow token mismatch");
+        assertEq(loan.collateralToken, weth, "Collateral token mismatch");
+        assertEq(uint8(loan.status), uint8(Lending.LoanStatus.ACTIVE), "Loan status should be ACTIVE");
+        assertEq(loan.id, loanIds[0], "Loan ID mismatch");
+
+        vm.stopPrank();
+    }
+
+    function testLoanLifecycle() public funded(obofte) {
+        // Constants
+        uint256 borrowAmount = 500e18; // 500 DAI
+        uint256 timeElapsed = 60 days;
+
+        vm.startPrank(obofte);
+
+        // 1. Deposit WETH as collateral
+        IERC20(weth).approve(address(lending), DEPOSIT_AMOUNT);
+        lending.depositCollateral(weth, DEPOSIT_AMOUNT);
+
+        // 2. Borrow DAI against WETH
+        vm.expectEmit(true, true, true, true, address(lending));
+        emit LoanCreated(obofte, dai, weth, borrowAmount, DEPOSIT_AMOUNT);
+        lending.borrow(dai, weth, borrowAmount, DEPOSIT_AMOUNT);
+
+        // 3. Get loan ID and initial state
+        bytes32[] memory loanIds = lending.getUserLoanIds(obofte);
+        assertEq(loanIds.length, 1, "Should have one loan");
+
+        // 4. Get initial loan state
+        (uint256 initialAmount, uint256 initialCollateral, uint256 initialInterest, Lending.LoanStatus initialStatus) =
+            lending.getLoanDetails(obofte, dai, weth);
+
+        assertEq(initialAmount, borrowAmount, "Initial loan amount mismatch");
+        assertEq(initialCollateral, DEPOSIT_AMOUNT, "Initial collateral mismatch");
+        assertEq(initialInterest, 0, "Initial interest should be zero");
+        assertEq(uint8(initialStatus), uint8(Lending.LoanStatus.ACTIVE), "Loan should be ACTIVE");
+
+        // 5. Simulate time passing
+        vm.warp(block.timestamp + timeElapsed);
+
+        // 6. Get updated loan details with accrued interest
+        (uint256 currentAmount, uint256 currentCollateral, uint256 currentInterest, Lending.LoanStatus currentStatus) =
+            lending.getLoanDetails(obofte, dai, weth);
+
+        uint256 totalDue = currentAmount + currentInterest;
+        assertTrue(currentInterest > 0, "Interest should have accrued");
+
+        // 7. Repay the loan
+        IERC20(dai).approve(address(lending), totalDue);
+        lending.repay(dai, weth, totalDue);
+
+        // 8. Verify final loan state
+        (uint256 finalAmount, uint256 finalCollateral, uint256 finalInterest, Lending.LoanStatus finalStatus) =
+            lending.getLoanDetails(obofte, dai, weth);
+
+        assertEq(uint8(finalStatus), uint8(Lending.LoanStatus.REPAID), "Loan should be REPAID");
+        assertEq(finalAmount, 0, "Loan amount should be zero");
+        assertEq(finalCollateral, 0, "Collateral should be zero");
+        assertEq(finalInterest, 0, "Interest should be zero");
+
+        vm.stopPrank();
+    }
+
+    function testMultipleLoansManagement() public funded(obofte) {
+        // Setup multiple loans with different collaterals
+        vm.startPrank(obofte);
+
+        // Approve tokens
+        IERC20(weth).approve(address(lending), type(uint256).max);
+        IERC20(wbtc).approve(address(lending), type(uint256).max);
+
+        // First loan: WETH collateral -> borrow DAI
+        lending.depositCollateral(weth, 1 ether);
+        lending.borrow(dai, weth, 500e18, 1 ether);
+
+        // Second loan: WBTC collateral -> borrow DAI
+        lending.depositCollateral(wbtc, 0.1 ether);
+        lending.borrow(dai, wbtc, 1000e18, 0.1 ether);
+
+        // Get all loans
+        bytes32[] memory loanIds = lending.getUserLoanIds(obofte);
+        assertEq(loanIds.length, 2, "Should have two loans");
+
+        // Verify first loan
+        Lending.Loan memory loan1 = lending.getLoanById(loanIds[0]);
+        assertEq(loan1.collateralToken, weth, "First loan collateral should be WETH");
+        assertEq(loan1.amount, 500e18, "First loan amount mismatch");
+
+        // Verify second loan
+        Lending.Loan memory loan2 = lending.getLoanById(loanIds[1]);
+        assertEq(loan2.collateralToken, wbtc, "Second loan collateral should be WBTC");
+        assertEq(loan2.amount, 1000e18, "Second loan amount mismatch");
+
+        // Repay first loan
+        uint256 loan1Due = loan1.amount + loan1.interest;
+        IERC20(dai).approve(address(lending), loan1Due);
+        lending.repay(dai, weth, loan1Due);
+
+        // Verify first loan is repaid but second remains active
+        loan1 = lending.getLoanById(loanIds[0]);
+        loan2 = lending.getLoanById(loanIds[1]);
+
+        assertEq(uint8(loan1.status), uint8(Lending.LoanStatus.REPAID), "First loan should be repaid");
+        assertEq(uint8(loan2.status), uint8(Lending.LoanStatus.ACTIVE), "Second loan should remain active");
+
+        vm.stopPrank();
+    }
+
+    function testLoanLifecycleWithNewStorage() public funded(obofte) {
+        // Constants
+        uint256 borrowAmount = 500e18; // 500 DAI
+        uint256 timeElapsed = 60 days;
+
+        vm.startPrank(obofte);
+
+        // 1. Deposit WETH as collateral
+        IERC20(weth).approve(address(lending), DEPOSIT_AMOUNT);
+        lending.depositCollateral(weth, DEPOSIT_AMOUNT);
+
+        // 2. Borrow DAI against WETH
+        vm.expectEmit(true, true, true, true, address(lending));
+        emit LoanCreated(obofte, dai, weth, borrowAmount, DEPOSIT_AMOUNT);
+        lending.borrow(dai, weth, borrowAmount, DEPOSIT_AMOUNT);
+
+        // 3. Get loan ID and initial state
+        bytes32[] memory loanIds = lending.getUserLoanIds(obofte);
+        assertEq(loanIds.length, 1, "Should have one loan");
+
+        // 4. Get initial loan state
+        (uint256 initialAmount, uint256 initialCollateral, uint256 initialInterest, Lending.LoanStatus initialStatus) =
+            lending.getLoanDetails(obofte, dai, weth);
+
+        assertEq(initialAmount, borrowAmount, "Initial loan amount mismatch");
+        assertEq(initialCollateral, DEPOSIT_AMOUNT, "Initial collateral mismatch");
+        assertEq(initialInterest, 0, "Initial interest should be zero");
+        assertEq(uint8(initialStatus), uint8(Lending.LoanStatus.ACTIVE), "Loan status should be ACTIVE");
+
+        // 5. Simulate time passing
+        vm.warp(block.timestamp + timeElapsed);
+
+        // 6. Get updated loan details with accrued interest
+        (uint256 currentAmount, uint256 currentCollateral, uint256 currentInterest, Lending.LoanStatus currentStatus) =
+            lending.getLoanDetails(obofte, dai, weth);
+
+        uint256 totalDue = currentAmount + currentInterest;
+        assertTrue(currentInterest > 0, "Interest should have accrued");
+
+        // 7. Repay the loan
+        IERC20(dai).approve(address(lending), totalDue);
+        lending.repay(dai, weth, totalDue);
+
+        // 8. Verify final loan state
+        (uint256 finalAmount, uint256 finalCollateral, uint256 finalInterest, Lending.LoanStatus finalStatus) =
+            lending.getLoanDetails(obofte, dai, weth);
+
+        assertEq(uint8(finalStatus), uint8(Lending.LoanStatus.REPAID), "Loan should be REPAID");
+        assertEq(finalAmount, 0, "Loan amount should be zero");
+        assertEq(finalCollateral, 0, "Collateral should be zero");
+        assertEq(finalInterest, 0, "Interest should be zero");
+
+        vm.stopPrank();
+    }
+
+    function testMultipleLoansTracking() public funded(obofte) {
+        vm.startPrank(obofte);
+
+        // Setup maximum approvals
+        IERC20(weth).approve(address(lending), type(uint256).max);
+        IERC20(wbtc).approve(address(lending), type(uint256).max);
+
+        // Create two loans
+        // First loan: WETH collateral -> borrow DAI
+        lending.depositCollateral(weth, 1 ether);
+        lending.borrow(dai, weth, 500e18, 1 ether);
+
+        // Second loan: WBTC collateral -> borrow DAI
+        lending.depositCollateral(wbtc, 0.1 ether);
+        lending.borrow(dai, wbtc, 1000e18, 0.1 ether);
+
+        // Verify loan states
+        (uint256 wethLoanAmount,,, Lending.LoanStatus wethLoanStatus) = lending.getLoanDetails(obofte, dai, weth);
+        (uint256 wbtcLoanAmount,,, Lending.LoanStatus wbtcLoanStatus) = lending.getLoanDetails(obofte, dai, wbtc);
+
+        assertEq(wethLoanAmount, 500e18, "WETH loan amount mismatch");
+        assertEq(wbtcLoanAmount, 1000e18, "WBTC loan amount mismatch");
+        assertEq(uint8(wethLoanStatus), uint8(Lending.LoanStatus.ACTIVE), "WETH loan should be active");
+        assertEq(uint8(wbtcLoanStatus), uint8(Lending.LoanStatus.ACTIVE), "WBTC loan should be active");
+
+        // Get loan details using getUserLoansWithStatus
+        (
+            address[] memory borrowTokens,
+            address[] memory collateralTokens,
+            uint256[] memory amounts,
+            uint256[] memory collateralAmounts
+        ) = lending.getUserLoansWithStatus(obofte, Lending.LoanStatus.ACTIVE);
+
+        assertEq(borrowTokens.length, 2, "Should have two active loans");
+        assertEq(collateralTokens.length, 2, "Should have two collateral tokens");
+
+        // Repay first loan (WETH-backed)
+        (,, uint256 wethLoanInterest,) = lending.getLoanDetails(obofte, dai, weth);
+        uint256 wethLoanTotalDue = 500e18 + wethLoanInterest;
+
+        IERC20(dai).approve(address(lending), wethLoanTotalDue);
+        lending.repay(dai, weth, wethLoanTotalDue);
+
+        // Verify updated loan states
+        (,,, Lending.LoanStatus newWethLoanStatus) = lending.getLoanDetails(obofte, dai, weth);
+        (,,, Lending.LoanStatus newWbtcLoanStatus) = lending.getLoanDetails(obofte, dai, wbtc);
+
+        assertEq(uint8(newWethLoanStatus), uint8(Lending.LoanStatus.REPAID), "WETH loan should be repaid");
+        assertEq(uint8(newWbtcLoanStatus), uint8(Lending.LoanStatus.ACTIVE), "WBTC loan should still be active");
+
+        // Get active loans after repayment
+        (borrowTokens, collateralTokens, amounts, collateralAmounts) =
+            lending.getUserLoansWithStatus(obofte, Lending.LoanStatus.ACTIVE);
+
+        assertEq(borrowTokens.length, 1, "Should have one active loan");
+        assertEq(borrowTokens[0], dai, "Active loan should be DAI");
+        assertEq(collateralTokens[0], wbtc, "Active loan collateral should be WBTC");
+
+        vm.stopPrank();
+    }
+
+    function testMultipleLoansWithSameTokens() public funded(obofte) {
+        vm.startPrank(obofte);
+        IERC20(weth).approve(address(lending), type(uint256).max);
+
+        // First loan: WETH -> DAI
+        lending.depositCollateral(weth, 0.5 ether);
+        lending.borrow(dai, weth, 500e18, 0.5 ether);
+
+        // Get first loan details and verify status
+        (uint256 firstLoanAmount,, uint256 firstLoanInterest, Lending.LoanStatus firstLoanStatus) =
+            lending.getLoanDetails(obofte, dai, weth);
+        assertEq(uint8(firstLoanStatus), uint8(Lending.LoanStatus.ACTIVE), "First loan should be active");
+
+        bytes32[] memory loanIds = lending.getUserLoanIds(obofte);
+        assertEq(loanIds.length, 1, "Should have one loan");
+        bytes32 firstLoanId = loanIds[0];
+
+        // Get total repayment amount including interest
+        uint256 totalRepayAmount = firstLoanAmount + firstLoanInterest;
+
+        // Repay first loan with principal + interest
+        IERC20(dai).approve(address(lending), totalRepayAmount);
+        lending.repay(dai, weth, totalRepayAmount);
+
+        // Verify first loan is now repaid
+        (,,, Lending.LoanStatus statusAfterRepay) = lending.getLoanDetails(obofte, dai, weth);
+        assertEq(uint8(statusAfterRepay), uint8(Lending.LoanStatus.REPAID), "First loan should be repaid");
+
+        // Take second loan with same tokens but different amounts
+        lending.depositCollateral(weth, 0.7 ether);
+        lending.borrow(dai, weth, 700e18, 0.7 ether);
+
+        // Verify we now have two loans in history
+        loanIds = lending.getUserLoanIds(obofte);
+        assertEq(loanIds.length, 2, "Should have two loans in history");
+
+        // Verify first loan is repaid and second is active
+        Lending.Loan memory firstLoan = lending.getLoanById(firstLoanId);
+        Lending.Loan memory secondLoan = lending.getLoanById(loanIds[1]);
+
+        assertEq(uint8(firstLoan.status), uint8(Lending.LoanStatus.REPAID), "First loan should be repaid");
+        assertEq(uint8(secondLoan.status), uint8(Lending.LoanStatus.ACTIVE), "Second loan should be active");
+        assertEq(secondLoan.amount, 700e18, "Second loan amount should be 700 DAI");
+        assertEq(secondLoan.collateralAmount, 0.7 ether, "Second loan collateral should be 0.7 WETH");
+
+        // Verify active loans only shows the second loan
+        (
+            address[] memory borrowTokens,
+            address[] memory collateralTokens,
+            uint256[] memory amounts,
+            uint256[] memory collateralAmounts
+        ) = lending.getUserLoansWithStatus(obofte, Lending.LoanStatus.ACTIVE);
+
+        assertEq(borrowTokens.length, 1, "Should have one active loan");
+        assertEq(amounts[0], 700e18, "Active loan amount should be 700 DAI");
+        assertEq(collateralAmounts[0], 0.7 ether, "Active loan collateral should be 0.7 WETH");
+
+        // Get repaid loans
+        (borrowTokens, collateralTokens, amounts, collateralAmounts) =
+            lending.getUserLoansWithStatus(obofte, Lending.LoanStatus.REPAID);
+
+        assertEq(borrowTokens.length, 1, "Should have one repaid loan");
+        assertEq(amounts[0], 500e18, "Repaid loan amount should be 500 DAI");
+        assertEq(collateralAmounts[0], 0.5 ether, "Repaid loan collateral should be 0.5 WETH");
+
+        vm.stopPrank();
+    }
+
+    function testSequentialLoans() public funded(obofte) {
+        vm.startPrank(obofte);
+
+        // Setup approvals
+        IERC20(weth).approve(address(lending), type(uint256).max);
+        IERC20(dai).approve(address(lending), type(uint256).max);
+
+        // First loan cycle: borrow and repay
+        lending.depositCollateral(weth, 0.5 ether);
+        lending.borrow(dai, weth, 500e18, 0.5 ether);
+
+        // Get first loan state
+        (uint256 amount1,, uint256 interest1, Lending.LoanStatus status1) = lending.getLoanDetails(obofte, dai, weth);
+        assertEq(uint8(status1), uint8(Lending.LoanStatus.ACTIVE), "First loan should be active");
+
+        // Repay first loan
+        lending.repay(dai, weth, amount1 + interest1);
+
+        // Verify first loan is now repaid
+        (,,, Lending.LoanStatus status1After) = lending.getLoanDetails(obofte, dai, weth);
+        assertEq(uint8(status1After), uint8(Lending.LoanStatus.REPAID), "First loan should be repaid");
+
+        // Create second loan with same tokens
+        lending.depositCollateral(weth, 0.7 ether);
+        lending.borrow(dai, weth, 700e18, 0.7 ether);
+
+        // Verify second loan state
+        (uint256 amount2, uint256 collateral2,, Lending.LoanStatus status2) = lending.getLoanDetails(obofte, dai, weth);
+        assertEq(amount2, 700e18, "Second loan amount should be 700 DAI");
+        assertEq(collateral2, 0.7 ether, "Second loan collateral should be 0.7 WETH");
+        assertEq(uint8(status2), uint8(Lending.LoanStatus.ACTIVE), "Second loan should be active");
+
         vm.stopPrank();
     }
 }

@@ -3,22 +3,30 @@
 # Anvil default private key
 DEFAULT_ANVIL_KEY := 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 
-.PHONY: deploy-faucet deploy-sepolia deploy-anvil
+.PHONY: all deploy-faucet deploy-lending deploy-all deploy-anvil
 
 # Deploy faucet to Sepolia
 deploy-faucet:
-    @forge script script/DeployFaucet.s.sol \
-        --rpc-url ${SEPOLIA_RPC_URL} \
-        --private-key ${PRIVATE_KEY} \
-        --broadcast \
-        --etherscan-api-key ${ETHERSCAN_API_KEY} \
-        --verify \
-        -vvvv
-    @echo "Faucet deployed successfully!"
-    @echo "Faucet address: $$(forge inspect --json $$(forge script script/DeployFaucet.s.sol --rpc-url ${SEPOLIA_RPC_URL} --private-key ${PRIVATE_KEY} --broadcast | jq -r '.deployments[0].address'))"
-    @echo "Faucet contract verified on Etherscan!"
+	forge script script/DeployFaucet.s.sol \
+		--rpc-url ${SEPOLIA_RPC_URL} \
+		--private-key ${PRIVATE_KEY} \
+		--broadcast \
+		--etherscan-api-key ${ETHERSCAN_API_KEY} \
+		--verify \
+		-vvvv
 
 # Deploy lending protocol to Sepolia
+deploy-lending:
+	forge script script/DeployLending.s.sol \
+		--rpc-url ${SEPOLIA_RPC_URL} \
+		--private-key ${PRIVATE_KEY} \
+		--broadcast \
+		--etherscan-api-key ${ETHERSCAN_API_KEY} \
+		--verify \
+		-vvvv
+
+# Deploy both contracts
+deploy-all: deploy-faucet deploy-lending
 deploy-sepolia:
     @forge script script/DeployLending.s.sol \
         --rpc-url ${SEPOLIA_RPC_URL} \

@@ -68,13 +68,22 @@ contract Lending is ReentrancyGuard, Ownable {
     // Track loans: user => borrow token => collateral token => loan details
     mapping(address user => mapping(address borrowToken => mapping(address collateralToken => Loan))) private s_loans;
 
+    // New state variables for loan management
+    uint256 private s_loanCounter;
+    mapping(bytes32 => Loan) private s_loanById;
+    mapping(address => bytes32[]) private s_userLoanIds;
+    mapping(bytes32 => address) private s_loanOwner;
+
     // ============ Structs ============
     struct Loan {
+        bytes32 id; // New: Unique loan identifier
         uint256 amount; // Amount borrowed
         uint256 interest; // Accrued interest
         uint256 startTime; // When the loan started
         LoanStatus status; // Status of the loan
         uint256 collateralAmount; // Amount of collateral locked for this specific loan
+        address borrowToken; // New: Store token addresses
+        address collateralToken; // New: Store token addresses
     }
 
     struct LiquidationDetails {
@@ -241,58 +250,9 @@ contract Lending is ReentrancyGuard, Ownable {
         moreThanZero(borrowAmount)
         moreThanZero(collateralAmount)
     {
-        // check for same token
-        if (borrowToken == collateralToken) {
-            revert Lending__SameTokenNotAllowed();
-        }
-
-        // Check if protocol has enough tokens to lend
-        uint256 protocolTokenBalance = IERC20(borrowToken).balanceOf(address(this));
-        if (protocolTokenBalance < borrowAmount) {
-            revert Lending__NotEnoughTokenInVaultToBorrow();
-        }
-
-        // Calculate minimum required collateral for this loan
-        // loan of 1 eth ($2000) --> Requires ($2000 * 100) / 80 = $2500 of collateral (DAI) --> overcollateralized by 25%
-        uint256 borrowValueInUsd = _getUSDValue(borrowToken, borrowAmount);
-        uint256 minimumRequiredCollateralValueInUsd = (borrowValueInUsd * LIQUIDATION_PRECISION) / LIQUIDATION_THRESHOLD;
-        uint256 minimumRequiredCollateralAmount =
-            _getTokenAmountFromUsd(collateralToken, minimumRequiredCollateralValueInUsd);
-
-        // Check if user's provided collateral meets minimum requirement
-        if (collateralAmount < minimumRequiredCollateralAmount) {
-            revert Lending__NotUpToMinimumCollateralRequiredForLoan(minimumRequiredCollateralAmount);
-        }
-
-        // Check if user has enough free collateral
-        uint256 freeCollateral = s_accountToTokensDeposited[msg.sender][collateralToken];
-
-        if (freeCollateral < collateralAmount) {
-            revert Lending__InsufficientCollateralForLoan(freeCollateral);
-        }
-
-        // Create loan and lock collateral - we store the collateral amount provided by the user in the loan struct, so we can return it to the user upon repayment
-        s_loans[msg.sender][borrowToken][collateralToken] = Loan({
-            amount: borrowAmount,
-            interest: 0,
-            startTime: block.timestamp,
-            status: LoanStatus.ACTIVE,
-            collateralAmount: collateralAmount
-        });
-
-        // Update the user's available collateral balance
-        s_accountToTokensDeposited[msg.sender][collateralToken] -= collateralAmount;
-
-        // Check if the user's health factor is still above 1 after borrowing
-        uint256 userHealthFactor = _calculateLoanHealthFactor(msg.sender, borrowToken, collateralToken);
-        if (userHealthFactor < MIN_HEALTH_FACTOR) {
-            revert Lending__BreaksProtocolHealthFactor(userHealthFactor);
-        }
-
-        // Transfer borrowed tokens to user
-        emit LoanCreated(msg.sender, borrowToken, collateralToken, borrowAmount, collateralAmount);
-        bool success = IERC20(borrowToken).transfer(msg.sender, borrowAmount);
-        if (!success) revert Lending__BorrowngTokenFailed();
+        _validateBorrowParameters(borrowToken, collateralToken, borrowAmount, collateralAmount);
+        _createAndStoreLoan(borrowToken, collateralToken, borrowAmount, collateralAmount);
+        _finalizeBorrow(borrowToken, collateralToken, borrowAmount, collateralAmount);
     }
 
     /**
@@ -312,34 +272,14 @@ contract Lending is ReentrancyGuard, Ownable {
         moreThanZero(amount)
     {
         Loan storage loan = s_loans[msg.sender][borrowToken][collateralToken];
+        bytes32 loanId = loan.id;
 
-        if (loan.status != LoanStatus.ACTIVE || loan.amount == 0) {
-            revert Lending__NoLoanFound();
-        }
-
-        uint256 interest = _loanInterest(loan);
-        uint256 totalDue = loan.amount + interest;
-
-        // Protocol only supports full loan repayment
-        if (amount < totalDue) {
-            revert Lending__InsufficientTokenBalanceToRepayLoan(amount, totalDue);
-        }
-
-        // Check if user has enough tokens to repay
-        uint256 userBalance = IERC20(borrowToken).balanceOf(msg.sender);
-        if (userBalance < totalDue) {
-            revert Lending__InsufficientTokenBalanceToRepayLoan(userBalance, totalDue);
-        }
-
+        uint256 totalDue = _validateRepayment(loan, amount);
         uint256 collateralToReturn = loan.collateralAmount;
 
-        // Update loan status to repaid
-        loan.status = LoanStatus.REPAID;
-        loan.amount = 0;
-        loan.interest = 0;
-        loan.collateralAmount = 0;
+        _updateLoanAfterRepayment(loan, loan.amount, loan.collateralAmount, loanId);
 
-        // unlock/return the collateral back to the user --> user redeem back his collateral
+        // Return collateral to user's available balance
         s_accountToTokensDeposited[msg.sender][collateralToken] += collateralToReturn;
 
         emit LoanRepaid(msg.sender, borrowToken, collateralToken, totalDue);
@@ -450,6 +390,194 @@ contract Lending is ReentrancyGuard, Ownable {
     //////////////////////////////////////////////////////////////*/
 
     /**
+     * @dev Validates loan repayment conditions and returns total amount due
+     * @param loan The loan to validate
+     * @param amount The amount being repaid
+     * @return totalDue The total amount due including interest
+     */
+    function _validateRepayment(Loan storage loan, uint256 amount) private view returns (uint256 totalDue) {
+        if (loan.status != LoanStatus.ACTIVE || loan.amount == 0) {
+            revert Lending__NoLoanFound();
+        }
+
+        uint256 interest = _loanInterest(loan);
+        totalDue = loan.amount + interest;
+
+        // Protocol only supports full loan repayment
+        if (amount < totalDue) {
+            revert Lending__InsufficientTokenBalanceToRepayLoan(amount, totalDue);
+        }
+
+        // Check if user has enough tokens to repay
+        uint256 userBalance = IERC20(loan.borrowToken).balanceOf(msg.sender);
+        if (userBalance < totalDue) {
+            revert Lending__InsufficientTokenBalanceToRepayLoan(userBalance, totalDue);
+        }
+
+        return totalDue;
+    }
+
+    /**
+     * @dev Updates loan state after repayment
+     * @param loan The loan to update
+     * @param historicalAmount The original loan amount
+     * @param historicalCollateral The original collateral amount
+     * @param loanId The ID of the loan
+     */
+    function _updateLoanAfterRepayment(
+        Loan storage loan,
+        uint256 historicalAmount,
+        uint256 historicalCollateral,
+        bytes32 loanId
+    ) private {
+        // Update loan in s_loans (current state)
+        loan.status = LoanStatus.REPAID;
+        loan.amount = 0;
+        loan.interest = 0;
+        loan.collateralAmount = 0;
+
+        // Update loan in s_loanById (historical record)
+        Loan storage loanById = s_loanById[loanId];
+        loanById.status = LoanStatus.REPAID;
+        loanById.amount = historicalAmount; // Keep historical amount
+        loanById.collateralAmount = historicalCollateral; // Keep historical collateral
+        loanById.interest = 0;
+    }
+    /**
+     * @dev Validates borrow parameters and checks protocol liquidity
+     * @param borrowToken The token to borrow
+     * @param collateralToken The token used as collateral
+     * @param borrowAmount The amount to borrow
+     * @param collateralAmount The amount of collateral to lock
+     */
+
+    function _validateBorrowParameters(
+        address borrowToken,
+        address collateralToken,
+        uint256 borrowAmount,
+        uint256 collateralAmount
+    ) private view {
+        // check for same token
+        if (borrowToken == collateralToken) {
+            revert Lending__SameTokenNotAllowed();
+        }
+
+        // Check if protocol has enough tokens to lend
+        uint256 protocolTokenBalance = IERC20(borrowToken).balanceOf(address(this));
+        if (protocolTokenBalance < borrowAmount) {
+            revert Lending__NotEnoughTokenInVaultToBorrow();
+        }
+
+        // Calculate minimum required collateral and validate
+        uint256 minimumRequiredCollateralAmount =
+            _calculateRequiredCollateral(borrowToken, collateralToken, borrowAmount);
+        if (collateralAmount < minimumRequiredCollateralAmount) {
+            revert Lending__NotUpToMinimumCollateralRequiredForLoan(minimumRequiredCollateralAmount);
+        }
+
+        // Check if user has enough free collateral
+        uint256 freeCollateral = s_accountToTokensDeposited[msg.sender][collateralToken];
+        if (freeCollateral < collateralAmount) {
+            revert Lending__InsufficientCollateralForLoan(freeCollateral);
+        }
+    }
+    /**
+     * @dev Calculates the minimum required collateral for a loan
+     * @param borrowToken The token to borrow
+     * @param collateralToken The token used as collateral
+     * @param borrowAmount The amount to borrow
+     * @return The minimum required collateral amount in wei
+     */
+
+    function _calculateRequiredCollateral(address borrowToken, address collateralToken, uint256 borrowAmount)
+        private
+        view
+        returns (uint256)
+    {
+        uint256 borrowValueInUsd = _getUSDValue(borrowToken, borrowAmount);
+        uint256 minimumRequiredCollateralValueInUsd = (borrowValueInUsd * LIQUIDATION_PRECISION) / LIQUIDATION_THRESHOLD;
+        return _getTokenAmountFromUsd(collateralToken, minimumRequiredCollateralValueInUsd);
+    }
+    /**
+     * @dev Creates a new loan and stores it in the mappings
+     * @param borrowToken The token to borrow
+     * @param collateralToken The token used as collateral
+     * @param borrowAmount The amount to borrow
+     * @param collateralAmount The amount of collateral to lock
+     * @return loanId The unique identifier for the new loan
+     */
+
+    function _createAndStoreLoan(
+        address borrowToken,
+        address collateralToken,
+        uint256 borrowAmount,
+        uint256 collateralAmount
+    ) private returns (bytes32) {
+        bytes32 loanId = _generateLoanId(msg.sender, borrowToken, collateralToken);
+
+        Loan memory newLoan = Loan({
+            id: loanId,
+            amount: borrowAmount,
+            interest: 0,
+            startTime: block.timestamp,
+            status: LoanStatus.ACTIVE,
+            collateralAmount: collateralAmount,
+            borrowToken: borrowToken,
+            collateralToken: collateralToken
+        });
+
+        // Store loan in both mappings
+        s_loanById[loanId] = newLoan;
+        s_loans[msg.sender][borrowToken][collateralToken] = newLoan;
+
+        // Track loan ownership
+        s_userLoanIds[msg.sender].push(loanId);
+        s_loanOwner[loanId] = msg.sender;
+
+        return loanId;
+    }
+    /**
+     * @dev Finalizes the borrow process by transferring tokens and updating state
+     * @param borrowToken The token to borrow
+     * @param collateralToken The token used as collateral
+     * @param borrowAmount The amount to borrow
+     * @param collateralAmount The amount of collateral to lock
+     */
+
+    function _finalizeBorrow(
+        address borrowToken,
+        address collateralToken,
+        uint256 borrowAmount,
+        uint256 collateralAmount
+    ) private {
+        // Update user's collateral balance
+        s_accountToTokensDeposited[msg.sender][collateralToken] -= collateralAmount;
+
+        // Check health factor
+        uint256 userHealthFactor = _calculateLoanHealthFactor(msg.sender, borrowToken, collateralToken);
+        if (userHealthFactor < MIN_HEALTH_FACTOR) {
+            revert Lending__BreaksProtocolHealthFactor(userHealthFactor);
+        }
+
+        // Transfer borrowed tokens to user
+        emit LoanCreated(msg.sender, borrowToken, collateralToken, borrowAmount, collateralAmount);
+        bool success = IERC20(borrowToken).transfer(msg.sender, borrowAmount);
+        if (!success) revert Lending__BorrowngTokenFailed();
+    }
+    /**
+     * @dev Generates a unique loan ID based on user and token addresses
+     * @param user The user address
+     * @param borrowToken The borrowed token address
+     * @param collateralToken The collateral token address
+     * @return loanId The unique loan ID
+     */
+
+    function _generateLoanId(address user, address borrowToken, address collateralToken) private returns (bytes32) {
+        bytes32 loanId = keccak256(abi.encodePacked(user, borrowToken, collateralToken, s_loanCounter++));
+        return loanId;
+    }
+
+    /**
      * @dev Validates if a loan can be liquidated
      */
     function _validateLiquidation(address account, address borrowToken, address collateralToken, Loan storage loan)
@@ -501,6 +629,8 @@ contract Lending is ReentrancyGuard, Ownable {
         Loan storage loan,
         LiquidationDetails memory details
     ) private {
+        bytes32 loanId = loan.id;
+
         // Verify loan has sufficient collateral -> this is the amount locked in the loan
         if (loan.collateralAmount < details.totalCollateral) {
             revert Lending__InsufficientCollateral(loan.collateralAmount, details.totalCollateral);
@@ -517,6 +647,8 @@ contract Lending is ReentrancyGuard, Ownable {
         loan.amount = 0;
         loan.collateralAmount = 0;
         loan.interest = 0;
+
+        s_loanById[loanId] = loan;
 
         emit LoanLiquidated(account, borrowToken, collateralToken, details.totalDebt, details.totalReward, msg.sender);
 
@@ -610,7 +742,7 @@ contract Lending is ReentrancyGuard, Ownable {
     }
 
     // for handling multiple tokens with different decimals() this would be a better approach
-    
+
     // function _getUSDValue2(address tokenAddress, uint256 amount) private view returns (uint256) {
     //     AggregatorV3Interface priceFeed = AggregatorV3Interface(s_tokenToPriceFeed[tokenAddress]);
     //     (, int256 price,,,) = priceFeed.latestRoundData();
@@ -741,13 +873,14 @@ contract Lending is ReentrancyGuard, Ownable {
             uint256[] memory collateralAmounts
         )
     {
+        bytes32[] memory userLoanIds = s_userLoanIds[user];
         uint256 count = 0;
+
         // First count matching loans
-        for (uint256 i = 0; i < s_allowedTokens.length; i++) {
-            for (uint256 j = 0; j < s_allowedTokens.length; j++) {
-                if (s_loans[user][s_allowedTokens[i]][s_allowedTokens[j]].status == status) {
-                    count++;
-                }
+        for (uint256 i = 0; i < userLoanIds.length; i++) {
+            Loan memory loan = s_loanById[userLoanIds[i]];
+            if (loan.status == status) {
+                count++;
             }
         }
 
@@ -759,21 +892,79 @@ contract Lending is ReentrancyGuard, Ownable {
 
         // Fill arrays with loan data
         uint256 index = 0;
-        for (uint256 i = 0; i < s_allowedTokens.length; i++) {
-            for (uint256 j = 0; j < s_allowedTokens.length; j++) {
-                Loan storage loan = s_loans[user][s_allowedTokens[i]][s_allowedTokens[j]];
-                if (loan.status == status) {
-                    borrowTokens[index] = s_allowedTokens[i];
-                    collateralTokens[index] = s_allowedTokens[j];
-                    amounts[index] = loan.amount;
-                    collateralAmounts[index] = loan.collateralAmount;
-                    index++;
-                }
+        for (uint256 i = 0; i < userLoanIds.length; i++) {
+            Loan memory loan = s_loanById[userLoanIds[i]];
+            if (loan.status == status) {
+                borrowTokens[index] = loan.borrowToken;
+                collateralTokens[index] = loan.collateralToken;
+                amounts[index] = loan.amount;
+                collateralAmounts[index] = loan.collateralAmount;
+                index++;
             }
         }
+
         return (borrowTokens, collateralTokens, amounts, collateralAmounts);
     }
 
+    /**
+     * @notice Gets the loan history for a user
+     * @param user The user address
+     * @return loanIds The IDs of the user's loans
+     * @return borrowTokens The borrow tokens of the user's loans
+     * @return collateralTokens The collateral tokens of the user's loans
+     * @return amounts The amounts of the user's loans
+     * @return collateralAmounts The collateral amounts of the user's loans
+     * @return statuses The statuses of the user's loans
+     */
+    function getUserLoanHistory(address user)
+        external
+        view
+        returns (
+            bytes32[] memory loanIds,
+            address[] memory borrowTokens,
+            address[] memory collateralTokens,
+            uint256[] memory amounts,
+            uint256[] memory collateralAmounts,
+            LoanStatus[] memory statuses
+        )
+    {
+        bytes32[] memory userLoanIds = s_userLoanIds[user];
+        uint256 length = userLoanIds.length;
+
+        borrowTokens = new address[](length);
+        collateralTokens = new address[](length);
+        amounts = new uint256[](length);
+        collateralAmounts = new uint256[](length);
+        statuses = new LoanStatus[](length);
+
+        for (uint256 i = 0; i < length; i++) {
+            Loan memory loan = s_loanById[userLoanIds[i]];
+            borrowTokens[i] = loan.borrowToken;
+            collateralTokens[i] = loan.collateralToken;
+            amounts[i] = loan.amount;
+            collateralAmounts[i] = loan.collateralAmount;
+            statuses[i] = loan.status;
+        }
+
+        return (userLoanIds, borrowTokens, collateralTokens, amounts, collateralAmounts, statuses);
+    }
+
+    /**
+     * @notice Gets the loan IDs of a user
+     * @param user The address of the user
+     */
+    function getUserLoanIds(address user) external view returns (bytes32[] memory loanIds) {
+        return s_userLoanIds[user];
+    }
+    /**
+     * @notice Gets the details of a loan by its ID
+     * @param loanId The ID of the loan
+     * @return The loan details
+     */
+
+    function getLoanById(bytes32 loanId) external view returns (Loan memory) {
+        return s_loanById[loanId];
+    }
     /*//////////////////////////////////////////////////////////////
                             RECEIVE FUNCTION
     //////////////////////////////////////////////////////////////*/
