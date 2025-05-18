@@ -29,10 +29,10 @@ contract DeployLending is Script {
 
         vm.startBroadcast(deployerKey);
         Lending lending = new Lending(tokenAddresses, priceFeedAddresses);
-        vm.stopBroadcast();
 
         // Request tokens to be minted directly to the lending contract
         FaucetTokens(faucet).requestTokensFor(address(lending));
+        vm.stopBroadcast();
         return (lending, helperConfig);
     }
 }
