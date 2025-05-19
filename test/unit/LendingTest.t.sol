@@ -25,15 +25,16 @@ contract LendingTest is Test {
     address public faucet;
 
     address public obofte = makeAddr("obofte");
+    address public yamal = makeAddr("yamal");
     address public debtor = makeAddr("debtor");
     address public liquidator = makeAddr("liquidator");
 
     // Constants for test amounts
     uint256 public constant DEPOSIT_AMOUNT = 1 ether;
     uint256 public constant BORROW_AMOUNT = 0.5 ether; // borrowing less than deposit to maintain health factor
-    uint256 public constant WETH_FAUCET_AMOUNT = 2 ether;
-    uint256 public constant WBTC_FAUCET_AMOUNT = 1 ether;
-    uint256 public constant DAI_FAUCET_AMOUNT = 10_000 ether;
+    uint256 public constant WETH_FAUCET_AMOUNT = 10e18;
+    uint256 public constant WBTC_FAUCET_AMOUNT = 1e18;
+    uint256 public constant DAI_FAUCET_AMOUNT = 100000e18;
 
     uint256 public constant ETH_USD_PRICE = 2000e18; //$2000/ETH
     uint256 public constant BTC_USD_PRICE = 100_000e18; //$100,000/BTC
@@ -552,7 +553,7 @@ contract LendingTest is Test {
     //////////////////////////
 
     function testWithdrawCollateral() public funded(obofte) {
-        // First user gets 2WETH from faucet, deposits 1 WETH as collateral, then withdraws 0.5 WETH --> user should have a balance of 1.5 WETH
+        // First user gets 10WETH from faucet, deposits 1 WETH as collateral, then withdraws 0.5 WETH --> user should have a balance of 9.5 WETH
         vm.startPrank(obofte);
         IERC20(weth).approve(address(lending), DEPOSIT_AMOUNT);
         lending.depositCollateral(weth, DEPOSIT_AMOUNT);
@@ -563,7 +564,7 @@ contract LendingTest is Test {
         lending.withdrawCollateral(weth, withdrawAmount);
         vm.stopPrank();
 
-        assertEq(IERC20(weth).balanceOf(obofte), 1.5 ether, "Incorrect balance after withdrawal");
+        assertEq(IERC20(weth).balanceOf(obofte), 9.5 ether, "Incorrect balance after withdrawal");
     }
 
     function testRevertsWhenWithdrawingTooMuch() public funded(obofte) {
@@ -1134,12 +1135,13 @@ contract LendingTest is Test {
 
         // Get loan history
         (
-            bytes32[] memory loanIds,
+            ,
             address[] memory borrowTokens,
             address[] memory collateralTokens,
             uint256[] memory amounts,
             ,
-            Lending.LoanStatus[] memory statuses
+            Lending.LoanStatus[] memory statuses,
+            ,
         ) = lending.getUserLoanHistory(debtor);
 
         assertEq(borrowTokens[0], dai, "Borrow token should be DAI");
@@ -1147,5 +1149,78 @@ contract LendingTest is Test {
         assertEq(amounts[0], BORROW_AMOUNT + additionalAmount, "Amount should include increase");
         assertEq(uint256(statuses[0]), uint256(Lending.LoanStatus.ACTIVE), "Loan should be active");
         vm.stopPrank();
+    }
+
+    function testGetAllActivePositions() public funded(obofte) funded(yamal) {
+        // Setup: Each loan should increment s_loanCounter
+
+        // First loan - Active loan for obofte (WETH collateral, borrow DAI)
+        vm.startPrank(obofte);
+        uint256 obofteCollateral = 1 ether;
+        uint256 obofteBorrowAmount = 1000e18;
+        IERC20(weth).approve(address(lending), obofteCollateral);
+        lending.depositCollateral(weth, obofteCollateral);
+        bytes32 firstLoanId = keccak256(abi.encodePacked(obofte, dai, weth, uint256(0))); // Counter starts at 0
+        vm.expectEmit(true, true, true, true, address(lending));
+        emit LoanCreated(obofte, dai, weth, obofteBorrowAmount, obofteCollateral);
+        lending.borrow(dai, weth, obofteBorrowAmount, obofteCollateral);
+        vm.stopPrank();
+
+        // Verify first loan id
+        Lending.Loan memory loan1 = lending.getLoanById(firstLoanId);
+        assertEq(uint8(loan1.status), uint8(Lending.LoanStatus.ACTIVE), "First loan should be active");
+
+        // Second loan - Active loan for yamal (WETH collateral, borrow DAI)
+        vm.startPrank(yamal);
+        uint256 yamalCollateral = 0.5 ether;
+        uint256 yamalBorrowAmount = 500e18;
+        IERC20(weth).approve(address(lending), yamalCollateral);
+        lending.depositCollateral(weth, yamalCollateral);
+        bytes32 secondLoanId = keccak256(abi.encodePacked(yamal, dai, weth, uint256(1))); // Counter should be 1
+        vm.expectEmit(true, true, true, true, address(lending));
+        emit LoanCreated(yamal, dai, weth, yamalBorrowAmount, yamalCollateral);
+        lending.borrow(dai, weth, yamalBorrowAmount, yamalCollateral);
+        vm.stopPrank();
+
+        // Verify second loan id
+        Lending.Loan memory loan2 = lending.getLoanById(secondLoanId);
+        assertEq(uint8(loan2.status), uint8(Lending.LoanStatus.ACTIVE), "Second loan should be active");
+
+        // Third loan - Will be repaid (WBTC collateral, borrow DAI)
+        vm.startPrank(obofte);
+        uint256 obofteSecondCollateral = 0.05e18;
+        uint256 obofteSecondBorrowAmount = 500e18;
+        IERC20(wbtc).approve(address(lending), obofteSecondCollateral);
+        lending.depositCollateral(wbtc, obofteSecondCollateral);
+        bytes32 thirdLoanId = keccak256(abi.encodePacked(obofte, dai, wbtc, uint256(2))); // Counter should be 2
+        vm.expectEmit(true, true, true, true, address(lending));
+        emit LoanCreated(obofte, dai, wbtc, obofteSecondBorrowAmount, obofteSecondCollateral);
+        lending.borrow(dai, wbtc, obofteSecondBorrowAmount, obofteSecondCollateral);
+
+        // Repay the third loan
+        IERC20(dai).approve(address(lending), obofteSecondBorrowAmount);
+        lending.repay(dai, wbtc, obofteSecondBorrowAmount);
+        vm.stopPrank();
+
+        // Verify third loan id and status after repayment
+        Lending.Loan memory loan3 = lending.getLoanById(thirdLoanId);
+        assertEq(uint8(loan3.status), uint8(Lending.LoanStatus.REPAID), "Third loan should be repaid");
+
+        // Get all active positions
+        (address[] memory borrowers, address[] memory borrowTokens, address[] memory collateralTokens,,,) =
+            lending.getAllActivePositions();
+
+        // Assert array lengths (should be 2 for active loans)
+        assertEq(borrowers.length, 2, "Should have 2 active positions");
+
+        for (uint256 i = 0; i < borrowers.length; i++) {
+            if (borrowers[i] == obofte) {
+                assertEq(borrowTokens[i], dai, "obofte borrow token should be DAI");
+                assertEq(collateralTokens[i], weth, "obofte collateral token should be WETH");
+            } else if (borrowers[i] == yamal) {
+                assertEq(borrowTokens[i], dai, "yamal borrow token should be DAI");
+                assertEq(collateralTokens[i], weth, "yamal collateral token should be WETH");
+            }
+        }
     }
 }

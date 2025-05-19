@@ -74,6 +74,7 @@ contract Lending is ReentrancyGuard, Ownable {
     mapping(bytes32 => Loan) private s_loanById;
     mapping(address => bytes32[]) private s_userLoanIds;
     mapping(bytes32 => address) private s_loanOwner;
+    bytes32[] s_loanIds;
 
     // ============ Structs ============
     struct Loan {
@@ -81,6 +82,7 @@ contract Lending is ReentrancyGuard, Ownable {
         uint256 amount; // Amount borrowed
         uint256 interest; // Accrued interest
         uint256 startTime; // When the loan started
+        uint256 endTime; // When the loan was repayed or liquidated
         LoanStatus status; // Status of the loan
         uint256 collateralAmount; // Amount of collateral locked for this specific loan
         address borrowToken; // New: Store token addresses
@@ -506,6 +508,7 @@ contract Lending is ReentrancyGuard, Ownable {
         loan.amount = 0;
         loan.interest = 0;
         loan.collateralAmount = 0;
+        loan.endTime = block.timestamp;
 
         // Update loan in s_loanById (historical record)
         Loan storage loanById = s_loanById[loanId];
@@ -597,6 +600,7 @@ contract Lending is ReentrancyGuard, Ownable {
             amount: borrowAmount,
             interest: 0,
             startTime: block.timestamp,
+            endTime: 0,
             status: LoanStatus.ACTIVE,
             collateralAmount: collateralAmount,
             borrowToken: borrowToken,
@@ -610,6 +614,9 @@ contract Lending is ReentrancyGuard, Ownable {
         // Track loan ownership
         s_userLoanIds[msg.sender].push(loanId);
         s_loanOwner[loanId] = msg.sender;
+
+        //keep record of all loans
+        s_loanIds.push(loanId);
 
         return loanId;
     }
@@ -721,6 +728,7 @@ contract Lending is ReentrancyGuard, Ownable {
         loan.amount = 0;
         loan.collateralAmount = 0;
         loan.interest = 0;
+        loan.endTime = block.timestamp;
 
         s_loanById[loanId] = loan;
 
@@ -1013,6 +1021,8 @@ contract Lending is ReentrancyGuard, Ownable {
      * @return amounts The amounts of the user's loans
      * @return collateralAmounts The collateral amounts of the user's loans
      * @return statuses The statuses of the user's loans
+     * @return startTime The start times of the user's loans
+     * @return endTime The end times of the user's loans
      */
     function getUserLoanHistory(address user)
         external
@@ -1023,17 +1033,22 @@ contract Lending is ReentrancyGuard, Ownable {
             address[] memory collateralTokens,
             uint256[] memory amounts,
             uint256[] memory collateralAmounts,
-            LoanStatus[] memory statuses
+            LoanStatus[] memory statuses,
+            uint256[] memory startTime,
+            uint256[] memory endTime
         )
     {
         bytes32[] memory userLoanIds = s_userLoanIds[user];
         uint256 length = userLoanIds.length;
 
+        loanIds = userLoanIds;
         borrowTokens = new address[](length);
         collateralTokens = new address[](length);
         amounts = new uint256[](length);
         collateralAmounts = new uint256[](length);
         statuses = new LoanStatus[](length);
+        startTime = new uint256[](length);
+        endTime = new uint256[](length);
 
         for (uint256 i = 0; i < length; i++) {
             Loan memory loan = s_loanById[userLoanIds[i]];
@@ -1042,9 +1057,11 @@ contract Lending is ReentrancyGuard, Ownable {
             amounts[i] = loan.amount;
             collateralAmounts[i] = loan.collateralAmount;
             statuses[i] = loan.status;
+            startTime[i] = loan.startTime;
+            endTime[i] = loan.endTime;
         }
 
-        return (userLoanIds, borrowTokens, collateralTokens, amounts, collateralAmounts, statuses);
+        return (loanIds, borrowTokens, collateralTokens, amounts, collateralAmounts, statuses, startTime, endTime);
     }
 
     /**
@@ -1063,12 +1080,80 @@ contract Lending is ReentrancyGuard, Ownable {
     function getLoanById(bytes32 loanId) external view returns (Loan memory) {
         return s_loanById[loanId];
     }
+
+    /**
+     * @notice Gets all active positions in the protocol
+     * @dev Returns arrays of addresses and amounts representing all active loans
+     * @return borrowers Array of borrower addresses
+     * @return borrowTokens Array of borrowed token addresses
+     * @return collateralTokens Array of collateral token addresses
+     * @return borrowAmounts Array of borrowed amounts
+     * @return collateralAmounts Array of collateral amounts
+     * @return startTimes Array of loan start timestamps
+     */
+    function getAllActivePositions()
+        external
+        view
+        returns (
+            address[] memory borrowers,
+            address[] memory borrowTokens,
+            address[] memory collateralTokens,
+            uint256[] memory borrowAmounts,
+            uint256[] memory collateralAmounts,
+            uint256[] memory startTimes
+        )
+    {
+        // First count active loans
+        uint256 activeLoansCount = 0;
+        bytes32[] memory allLoanIds = getAllLoanIds();
+
+        // Count active loans
+        for (uint256 i = 0; i < allLoanIds.length; i++) {
+            if (s_loanById[allLoanIds[i]].status == LoanStatus.ACTIVE) {
+                activeLoansCount++;
+            }
+        }
+
+        // Initialize arrays with the correct size
+        borrowers = new address[](activeLoansCount);
+        borrowTokens = new address[](activeLoansCount);
+        collateralTokens = new address[](activeLoansCount);
+        borrowAmounts = new uint256[](activeLoansCount);
+        collateralAmounts = new uint256[](activeLoansCount);
+        startTimes = new uint256[](activeLoansCount);
+
+        // Populate arrays with active loan data
+        uint256 currentIndex = 0;
+        for (uint256 i = 0; i < allLoanIds.length; i++) {
+            bytes32 loanId = allLoanIds[i];
+            Loan memory loan = s_loanById[loanId];
+            if (loan.status == LoanStatus.ACTIVE) {
+                borrowers[currentIndex] = s_loanOwner[loanId];
+                borrowTokens[currentIndex] = loan.borrowToken;
+                collateralTokens[currentIndex] = loan.collateralToken;
+                borrowAmounts[currentIndex] = loan.amount;
+                collateralAmounts[currentIndex] = loan.collateralAmount;
+                startTimes[currentIndex] = loan.startTime;
+                currentIndex++;
+            }
+        }
+
+        return (borrowers, borrowTokens, collateralTokens, borrowAmounts, collateralAmounts, startTimes);
+    }
+    /**
+     * @notice Gets all loan IDs in the protocol
+     * @return An array of all loan IDs
+     */
+
+    function getAllLoanIds() public view returns (bytes32[] memory) {
+        return s_loanIds;
+    }
+
     /*//////////////////////////////////////////////////////////////
                             RECEIVE FUNCTION
     //////////////////////////////////////////////////////////////*/
     /**
      * @notice Allows the contract to receive ETH
      */
-
     receive() external payable {}
 }

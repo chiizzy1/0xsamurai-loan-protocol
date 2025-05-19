@@ -40,7 +40,7 @@ SamuraiLoan is a lending protocol that allows users to:
 - WBTC: `0xE17002758791c5C2A8A2654f5E719607F4A7Fc18`
 - DAI: `0xACe6a5728D161B01437594aB0a501187e521AEE6`
 - Faucet: `0x1afe87187A4f032BfA745D02a4639eDE6d4a1e71`
-- Lending Protocol: `0xa4C7Cd95Cb7da9e582c3f85b577034f7A17d6E14`
+- Lending Protocol: `0x0C55c58EEB6029915CBaAb6d4fbD3e075B528b3e`
 
 ## Development
 
